@@ -1,9 +1,8 @@
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useEffect, useState } from 'react';
+import { getApps, initializeApp } from 'firebase/app';
+import { getDatabase, onValue, ref } from 'firebase/database';
+import { useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
-  Pressable,
-  RefreshControl,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -21,7 +20,10 @@ type PondReading = {
 };
 
 const FIREBASE_DATABASE_URL = 'https://isdapp-251fc-default-rtdb.asia-southeast1.firebasedatabase.app';
-const FIREBASE_PATH = '/IsdaApp/Pond_1/live_data.json';
+const FIREBASE_PATH = 'IsdaApp/Pond_1/live_data';
+
+const firebaseApp = getApps().length > 0 ? getApps()[0] : initializeApp({ databaseURL: FIREBASE_DATABASE_URL });
+const database = getDatabase(firebaseApp);
 
 const demoReading: PondReading = {
   temp: 28.4,
@@ -47,37 +49,32 @@ function formatValue(value: number, key: string) {
 
 export default function App() {
   const [reading, setReading] = useState<PondReading>(demoReading);
-  const [isRefreshing, setIsRefreshing] = useState(false);
   const [isLive, setIsLive] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(new Date());
 
-  const loadReading = useCallback(async (showSpinner = true) => {
-    if (showSpinner) setIsRefreshing(true);
-    if (FIREBASE_DATABASE_URL) {
-      try {
-        const response = await fetch(`${FIREBASE_DATABASE_URL}${FIREBASE_PATH}?ts=${Date.now()}`, {
-          headers: { 'Cache-Control': 'no-cache' },
-        });
-        if (!response.ok) throw new Error('Firebase request failed');
-        const data = (await response.json()) as PondReading;
-        setReading(data);
+  useEffect(() => {
+    const pondRef = ref(database, FIREBASE_PATH);
+    const unsubscribe = onValue(
+      pondRef,
+      (snapshot) => {
+        const data = snapshot.val() as Partial<Record<keyof PondReading, number | string>> | null;
+        if (!data) {
+          setIsLive(false);
+          return;
+        }
+
+        const nextReading = Object.fromEntries(
+          (Object.keys(demoReading) as Array<keyof PondReading>).map((key) => [key, Number(data[key] ?? demoReading[key])]),
+        ) as PondReading;
+        setReading(nextReading);
         setIsLive(true);
         setLastUpdated(new Date());
-      } catch {
-        setIsLive(false);
-      }
-    } else {
-      setIsLive(false);
-    }
-    if (showSpinner) setIsRefreshing(false);
+      },
+      () => setIsLive(false),
+    );
+
+    return unsubscribe;
   }, []);
-
-  useEffect(() => {
-    loadReading();
-    const interval = setInterval(() => loadReading(false), 5000);
-
-    return () => clearInterval(interval);
-  }, [loadReading]);
 
   const hasAlert = reading.do < 3 || reading.ph < 6.5 || reading.ph > 8.5;
 
@@ -86,7 +83,6 @@ export default function App() {
       <StatusBar style="light" />
       <ScrollView
         contentContainerStyle={styles.content}
-        refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={loadReading} tintColor="#59c3c3" />}
       >
         <View style={styles.header}>
           <View>
@@ -106,7 +102,7 @@ export default function App() {
           <Text style={styles.heroCopy}>{hasAlert ? 'A reading is outside the safe range.' : 'Your pond is within the safe range.'}</Text>
           <View style={styles.updatedRow}>
             <View style={styles.pulse} />
-            <Text style={styles.updatedText}>Updated {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</Text>
+            <Text style={styles.updatedText}>Updated {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</Text>
           </View>
         </View>
 
@@ -122,9 +118,6 @@ export default function App() {
 
         <View style={styles.sectionHeading}>
           <Text style={styles.sectionTitle}>Live readings</Text>
-          <Pressable onPress={() => loadReading()} style={({ pressed }) => [styles.refreshButton, pressed && styles.pressed]}>
-            {isRefreshing ? <ActivityIndicator color="#15252b" size="small" /> : <Text style={styles.refreshText}>Refresh</Text>}
-          </Pressable>
         </View>
 
         <View style={styles.grid}>
