@@ -4,49 +4,56 @@ import { formatValue } from '../metrics';
 import { styles } from '../styles';
 import { ActiveAlert } from '../types';
 import { formatRelativeTime } from '../utils';
- 
+
 type AlertScreenProps = {
   activeAlerts: ActiveAlert[];
   showCritical: boolean;
   showWarning: boolean;
+  clearedAlertsAt: number | null;
+  onClearAll: () => void;
 };
- 
+
 function getAlertTitle(alert: ActiveAlert) {
   return alert.severity === 'critical'
     ? `Critical ${alert.metric.label}`
     : `${alert.metric.label} Warning`;
 }
- 
+
 function getAlertMessage(alert: ActiveAlert) {
   const formatted = `${formatValue(alert.value, alert.metric.key)} ${alert.metric.unit}`;
   return alert.severity === 'critical'
     ? `${alert.metric.label} has reached a critical level at ${formatted}.`
     : `${alert.metric.label} is trending outside the safe range at ${formatted}.`;
 }
- 
-export default function AlertScreen({ activeAlerts, showCritical, showWarning }: AlertScreenProps) {
-  const [clearedAt, setClearedAt] = useState<Date | null>(null);
+
+export default function AlertScreen({
+  activeAlerts,
+  showCritical,
+  showWarning,
+  clearedAlertsAt,
+  onClearAll,
+}: AlertScreenProps) {
   const [now, setNow] = useState(new Date());
- 
+
   // Keep "x minutes ago" labels fresh without needing new sensor data.
   useEffect(() => {
     const interval = setInterval(() => setNow(new Date()), 30000);
     return () => clearInterval(interval);
   }, []);
- 
+
   const notMuted = activeAlerts.filter(
     (alert) => (alert.severity === 'critical' && showCritical) || (alert.severity === 'warning' && showWarning),
   );
- 
+
   const visibleAlerts = notMuted
-    .filter((alert) => !clearedAt || alert.detectedAt > clearedAt)
+    .filter((alert) => !clearedAlertsAt || alert.detectedAt.getTime() > clearedAlertsAt)
     .sort((a, b) => b.detectedAt.getTime() - a.detectedAt.getTime());
- 
+
   const criticalCount = visibleAlerts.filter((alert) => alert.severity === 'critical').length;
   const warningCount = visibleAlerts.length - criticalCount;
   const hasAlerts = visibleAlerts.length > 0;
   const isMuted = activeAlerts.length > 0 && notMuted.length === 0;
- 
+
   return (
     <ScrollView contentContainerStyle={styles.content}>
       <View style={styles.header}>
@@ -55,7 +62,7 @@ export default function AlertScreen({ activeAlerts, showCritical, showWarning }:
           <Text style={styles.screenSubtitle}>System Notifications</Text>
         </View>
       </View>
- 
+
       <View style={[styles.alertsSummaryCard, hasAlerts ? styles.alertsSummaryCardActive : styles.alertsSummaryCardClear]}>
         <Text style={styles.alertsSummaryTitle}>{hasAlerts ? 'Active Alerts' : 'All Clear'}</Text>
         <Text style={styles.alertsSummaryCopy}>
@@ -64,7 +71,7 @@ export default function AlertScreen({ activeAlerts, showCritical, showWarning }:
             : 'All readings are currently within their safe ranges.'}
         </Text>
       </View>
- 
+
       {hasAlerts &&
         visibleAlerts.map((alert) => {
           const isCritical = alert.severity === 'critical';
@@ -93,9 +100,9 @@ export default function AlertScreen({ activeAlerts, showCritical, showWarning }:
                 </View>
                 <Text style={styles.alertItemTime}>{formatRelativeTime(alert.detectedAt, now)}</Text>
               </View>
- 
+
               <Text style={styles.alertItemMessage}>{getAlertMessage(alert)}</Text>
- 
+
               <View style={styles.thresholdRow}>
                 <View style={styles.thresholdCol}>
                   <Text style={styles.thresholdLabel}>PARAMETER</Text>
@@ -117,7 +124,7 @@ export default function AlertScreen({ activeAlerts, showCritical, showWarning }:
             </View>
           );
         })}
- 
+
       {!hasAlerts && (
         <View style={styles.emptyState}>
           <View style={styles.emptyBadge}>
@@ -131,9 +138,9 @@ export default function AlertScreen({ activeAlerts, showCritical, showWarning }:
           </Text>
         </View>
       )}
- 
+
       <Pressable
-        onPress={() => setClearedAt(new Date())}
+        onPress={onClearAll}
         disabled={!hasAlerts}
         style={({ pressed }) => [
           styles.clearAllButton,
@@ -146,4 +153,3 @@ export default function AlertScreen({ activeAlerts, showCritical, showWarning }:
     </ScrollView>
   );
 }
- 

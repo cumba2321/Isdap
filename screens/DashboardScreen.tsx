@@ -2,7 +2,7 @@ import { ScrollView, Text, View } from 'react-native';
 import { formatValue, metrics } from '../metrics';
 import { styles } from '../styles';
 import { PondReading } from '../types';
- 
+
 type DashboardScreenProps = {
   reading: PondReading;
   isLive: boolean;
@@ -11,7 +11,7 @@ type DashboardScreenProps = {
   farmName: string;
   autoRefreshPaused: boolean;
 };
- 
+
 export default function DashboardScreen({
   reading,
   isLive,
@@ -32,7 +32,7 @@ export default function DashboardScreen({
           <Text style={styles.stationText}>{isLive ? 'LIVE' : 'DEMO'}</Text>
         </View>
       </View>
- 
+
       <View style={styles.hero}>
         <View style={styles.heroOrb} />
         <Text style={styles.heroLabel}>WATER QUALITY INDEX</Text>
@@ -50,7 +50,7 @@ export default function DashboardScreen({
           </Text>
         </View>
       </View>
- 
+
       {hasAlert && (
         <View style={styles.alert}>
           <Text style={styles.alertIcon}>!</Text>
@@ -60,11 +60,11 @@ export default function DashboardScreen({
           </View>
         </View>
       )}
- 
+
       <View style={styles.sectionHeading}>
         <Text style={styles.sectionTitle}>Live readings</Text>
       </View>
- 
+
       <View style={styles.grid}>
         {metrics.map((metric) => {
           const value = reading[metric.key];
@@ -84,18 +84,6 @@ export default function DashboardScreen({
           );
         })}
       </View>
- 
-      <View style={styles.connectionRow}>
-        <View style={styles.connectionMark}>
-          <Text style={styles.connectionMarkText}>SD</Text>
-        </View>
-        <View style={styles.connectionBody}>
-          <Text style={styles.connectionTitle}>Station backup active</Text>
-          <Text style={styles.connectionCopy}>Arduino logs are also saved to pond_log.csv</Text>
-        </View>
-        <Text style={styles.connectionChevron}>›</Text>
-      </View>
     </ScrollView>
   );
 }
- 

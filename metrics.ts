@@ -1,4 +1,4 @@
-import { Metric, MetricKey, PondReading, Severity } from './types';
+ import { Metric, MetricKey, PondReading, Severity } from './types';
  
 export const demoReading: PondReading = {
   temp: 28.4,

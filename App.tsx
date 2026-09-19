@@ -1,9 +1,9 @@
 import { StatusBar } from 'expo-status-bar';
 import { getApps, initializeApp } from 'firebase/app';
-import { getDatabase, onValue, ref } from 'firebase/database';
+import { getDatabase, onValue, ref, set, update } from 'firebase/database';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { SafeAreaView, Vibration, View } from 'react-native';
- 
+
 import TabBar from './components/TabBar';
 import { demoReading, metrics } from './metrics';
 import AlertScreen from './screens/AlertScreen';
@@ -21,15 +21,21 @@ import {
   PondReading,
   TabKey,
 } from './types';
- 
+
 const FIREBASE_DATABASE_URL = 'https://isdapp-251fc-default-rtdb.asia-southeast1.firebasedatabase.app';
 const FIREBASE_PATH = 'IsdaApp/Pond_1/live_data';
- 
+const ACCOUNTS_PATH = 'IsdaApp/accounts';
+
 const firebaseApp = getApps().length > 0 ? getApps()[0] : initializeApp({ databaseURL: FIREBASE_DATABASE_URL });
 const database = getDatabase(firebaseApp);
- 
+
 type AuthScreen = 'login' | 'signup';
- 
+
+type StoredAccount = Account & {
+  preferences?: NotificationPreferences;
+  clearedAlertsAt?: number;
+};
+
 const DEFAULT_PREFERENCES: NotificationPreferences = {
   alertNotifications: true,
   warningNotifications: true,
@@ -38,12 +44,18 @@ const DEFAULT_PREFERENCES: NotificationPreferences = {
   autoRefresh: true,
   soundAlerts: true,
 };
- 
-// Seeded demo account so the app is usable without signing up first.
-const INITIAL_ACCOUNTS: Record<string, Account> = {
-  pond_farm_01: { email: 'demo@isdaapp.io', password: 'password123', farmName: 'Pond one' },
+
+// Seeded demo account. Only written to Firebase if the accounts path is
+// still empty, so it won't overwrite real data on every app start.
+const SEED_ACCOUNTS: Record<string, StoredAccount> = {
+  pond_farm_01: {
+    email: 'demo@isdaapp.io',
+    password: 'password123',
+    farmName: 'Pond one',
+    preferences: DEFAULT_PREFERENCES,
+  },
 };
- 
+
 export default function App() {
   const [reading, setReading] = useState<PondReading>(demoReading);
   const [isLive, setIsLive] = useState(false);
@@ -52,38 +64,68 @@ export default function App() {
   const [alertDetectedAt, setAlertDetectedAt] = useState<Partial<Record<MetricKey, Date>>>({});
   const [farmId, setFarmId] = useState<string | null>(null);
   const [authScreen, setAuthScreen] = useState<AuthScreen>('login');
-  const [accounts, setAccounts] = useState<Record<string, Account>>(INITIAL_ACCOUNTS);
+  const [accounts, setAccounts] = useState<Record<string, StoredAccount>>(SEED_ACCOUNTS);
   const [preferences, setPreferences] = useState<NotificationPreferences>(DEFAULT_PREFERENCES);
- 
+  const [clearedAlertsAt, setClearedAlertsAt] = useState<number | null>(null);
+
   const isAuthenticated = farmId !== null;
   const currentAccount = farmId ? accounts[farmId] : null;
- 
+
+  // Load every registered account from Firebase. If the database is empty
+  // (first run), seed it with the demo account so sign-in still works.
+  useEffect(() => {
+    const accountsRef = ref(database, ACCOUNTS_PATH);
+    const unsubscribe = onValue(accountsRef, (snapshot) => {
+      const data = snapshot.val() as Record<string, StoredAccount> | null;
+      if (data) {
+        setAccounts(data);
+      } else {
+        set(accountsRef, SEED_ACCOUNTS);
+        setAccounts(SEED_ACCOUNTS);
+      }
+    });
+    return unsubscribe;
+  }, []);
+
+  // Whenever the signed-in farm's account record changes (including right
+  // after login), sync local preferences state from what's stored.
+  useEffect(() => {
+    if (!farmId) return;
+    setPreferences(accounts[farmId]?.preferences ?? DEFAULT_PREFERENCES);
+    setClearedAlertsAt(accounts[farmId]?.clearedAlertsAt ?? null);
+  }, [farmId, accounts]);
+
   const handleSignIn = (id: string, password: string): AuthResult => {
-    console.log('APP: handleSignIn called with', JSON.stringify(id), JSON.stringify(password));
-  const account = accounts[id];
-    console.log('APP: found account?', account);
+    const account = accounts[id];
     if (!account || account.password !== password) {
       return { success: false, error: 'Incorrect farm ID or password.' };
     }
     setFarmId(id);
     return { success: true };
-    };
- 
+  };
+
   const handleSignUp = (id: string, email: string, password: string): AuthResult => {
     if (accounts[id]) {
       return { success: false, error: 'That farm ID is already registered.' };
     }
-    setAccounts((prev) => ({ ...prev, [id]: { email, password, farmName: 'Pond one' } }));
+    const newAccount: StoredAccount = {
+      email,
+      password,
+      farmName: 'Pond one',
+      preferences: DEFAULT_PREFERENCES,
+    };
+    setAccounts((prev) => ({ ...prev, [id]: newAccount }));
+    set(ref(database, `${ACCOUNTS_PATH}/${id}`), newAccount);
     setFarmId(id);
     return { success: true };
   };
- 
+
   const handleLogout = () => {
     setFarmId(null);
     setAuthScreen('login');
     setActiveTab('dashboard');
   };
- 
+
   const handleChangePassword = (currentPassword: string, newPassword: string): AuthResult => {
     if (!farmId) return { success: false, error: 'You are not signed in.' };
     const account = accounts[farmId];
@@ -91,20 +133,36 @@ export default function App() {
       return { success: false, error: 'Current password is incorrect.' };
     }
     setAccounts((prev) => ({ ...prev, [farmId]: { ...prev[farmId], password: newPassword } }));
+    update(ref(database, `${ACCOUNTS_PATH}/${farmId}`), { password: newPassword });
     return { success: true };
   };
- 
+
   const handleUpdateFarmName = (newName: string): AuthResult => {
     if (!farmId) return { success: false, error: 'You are not signed in.' };
     const trimmed = newName.trim();
     if (!trimmed) return { success: false, error: 'Farm name cannot be empty.' };
     setAccounts((prev) => ({ ...prev, [farmId]: { ...prev[farmId], farmName: trimmed } }));
+    update(ref(database, `${ACCOUNTS_PATH}/${farmId}`), { farmName: trimmed });
     return { success: true };
   };
- 
-  const togglePreference = (key: keyof NotificationPreferences) =>
-    setPreferences((prev) => ({ ...prev, [key]: !prev[key] }));
- 
+
+  const handleClearAllAlerts = () => {
+    if (!farmId) return;
+    const timestamp = Date.now();
+    setClearedAlertsAt(timestamp);
+    update(ref(database, `${ACCOUNTS_PATH}/${farmId}`), { clearedAlertsAt: timestamp });
+  };
+
+  const togglePreference = (key: keyof NotificationPreferences) => {
+    setPreferences((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      if (farmId) {
+        update(ref(database, `${ACCOUNTS_PATH}/${farmId}/preferences`), next);
+      }
+      return next;
+    });
+  };
+
   // Pull live sensor data, unless Auto Refresh is turned off in Settings.
   useEffect(() => {
     const pondRef = ref(database, FIREBASE_PATH);
@@ -112,13 +170,13 @@ export default function App() {
       pondRef,
       (snapshot) => {
         if (!preferences.autoRefresh) return;
- 
+
         const data = snapshot.val() as Partial<Record<keyof PondReading, number | string>> | null;
         if (!data) {
           setIsLive(false);
           return;
         }
- 
+
         const nextReading = Object.fromEntries(
           (Object.keys(demoReading) as Array<keyof PondReading>).map((key) => [
             key,
@@ -131,17 +189,17 @@ export default function App() {
       },
       () => setIsLive(false),
     );
- 
+
     return unsubscribe;
   }, [preferences.autoRefresh]);
- 
+
   // Track the first moment each metric started breaching its safe range, so
   // the Alerts screen can show "X minutes/hours ago" per alert.
   useEffect(() => {
     setAlertDetectedAt((prev) => {
       let changed = false;
       const next = { ...prev };
- 
+
       metrics.forEach((metric) => {
         const severity = metric.getSeverity(reading[metric.key]);
         if (severity && !next[metric.key]) {
@@ -152,11 +210,11 @@ export default function App() {
           changed = true;
         }
       });
- 
+
       return changed ? next : prev;
     });
   }, [reading]);
- 
+
   const activeAlerts: ActiveAlert[] = useMemo(() => {
     return metrics.flatMap((metric) => {
       const value = reading[metric.key];
@@ -172,9 +230,9 @@ export default function App() {
       ];
     });
   }, [reading, alertDetectedAt]);
- 
+
   const hasAlert = activeAlerts.length > 0;
- 
+
   // Vibrate on newly detected critical alerts, if Sound Alerts is enabled.
   const previousCriticalKeys = useRef<Set<MetricKey>>(new Set());
   useEffect(() => {
@@ -182,14 +240,14 @@ export default function App() {
       activeAlerts.filter((alert) => alert.severity === 'critical').map((alert) => alert.metric.key),
     );
     const hasNewCritical = [...currentCriticalKeys].some((key) => !previousCriticalKeys.current.has(key));
- 
+
     if (hasNewCritical && preferences.soundAlerts) {
       Vibration.vibrate(400);
     }
- 
+
     previousCriticalKeys.current = currentCriticalKeys;
   }, [activeAlerts, preferences.soundAlerts]);
- 
+
   if (!isAuthenticated) {
     return authScreen === 'login' ? (
       <LoginScreen onSignIn={handleSignIn} onNavigateSignUp={() => setAuthScreen('signup')} />
@@ -197,11 +255,11 @@ export default function App() {
       <SignupScreen onSignUp={handleSignUp} onNavigateSignIn={() => setAuthScreen('login')} />
     );
   }
- 
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar style="light" />
- 
+
       <View style={styles.screenContainer}>
         {activeTab === 'dashboard' && (
           <DashboardScreen
@@ -218,6 +276,8 @@ export default function App() {
             activeAlerts={activeAlerts}
             showCritical={preferences.alertNotifications}
             showWarning={preferences.warningNotifications}
+            clearedAlertsAt={clearedAlertsAt}
+            onClearAll={handleClearAllAlerts}
           />
         )}
         {activeTab === 'settings' && (
@@ -235,9 +295,8 @@ export default function App() {
           />
         )}
       </View>
- 
+
       <TabBar activeTab={activeTab} onChangeTab={setActiveTab} hasAlert={hasAlert} />
     </SafeAreaView>
   );
 }
- 
