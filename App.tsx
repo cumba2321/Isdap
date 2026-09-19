@@ -1,10 +1,10 @@
 import { StatusBar } from 'expo-status-bar';
-import { getApps, initializeApp } from 'firebase/app';
-import { getDatabase, onValue, ref, set, update } from 'firebase/database';
+import { onValue, ref, set, update } from 'firebase/database';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { SafeAreaView, Vibration, View } from 'react-native';
 
 import TabBar from './components/TabBar';
+import { db as database } from './firebaseConfig';
 import { demoReading, metrics } from './metrics';
 import AlertScreen from './screens/AlertScreen';
 import DashboardScreen from './screens/DashboardScreen';
@@ -22,12 +22,9 @@ import {
   TabKey,
 } from './types';
 
-const FIREBASE_DATABASE_URL = 'https://isdapp-251fc-default-rtdb.asia-southeast1.firebasedatabase.app';
-const FIREBASE_PATH = 'IsdaApp/Pond_1/live_data';
+// The Arduino uploads with: PUT /live_data.json
+const FIREBASE_PATH = 'live_data';
 const ACCOUNTS_PATH = 'IsdaApp/accounts';
-
-const firebaseApp = getApps().length > 0 ? getApps()[0] : initializeApp({ databaseURL: FIREBASE_DATABASE_URL });
-const database = getDatabase(firebaseApp);
 
 type AuthScreen = 'login' | 'signup';
 
@@ -171,18 +168,22 @@ export default function App() {
       (snapshot) => {
         if (!preferences.autoRefresh) return;
 
-        const data = snapshot.val() as Partial<Record<keyof PondReading, number | string>> | null;
+        const data = snapshot.val() as
+          | (Partial<Record<keyof PondReading, number | string>> & { ntu?: number | string })
+          | null;
         if (!data) {
           setIsLive(false);
           return;
         }
 
-        const nextReading = Object.fromEntries(
-          (Object.keys(demoReading) as Array<keyof PondReading>).map((key) => [
-            key,
-            Number(data[key] ?? demoReading[key]),
-          ]),
-        ) as PondReading;
+        const nextReading: PondReading = {
+          temp: Number(data.temp ?? demoReading.temp),
+          ec: Number(data.ec ?? demoReading.ec),
+          do: Number(data.do ?? demoReading.do),
+          ph: Number(data.ph ?? demoReading.ph),
+          tds: Number(data.tds ?? demoReading.tds),
+          turbidity: Number(data.turbidity ?? data.ntu ?? demoReading.turbidity),
+        };
         setReading(nextReading);
         setIsLive(true);
         setLastUpdated(new Date());
