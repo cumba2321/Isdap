@@ -296,6 +296,15 @@ export default function SettingsScreen({
       icon: '🔔',
       rows: [
         {
+          key: 'pushNotifications',
+          type: 'toggle',
+          toggleKey: 'pushNotifications',
+          icon: '📲',
+          iconBg: '#59c3c322',
+          title: 'Push Notifications',
+          subtitle: 'Notify me for every warning or critical reading',
+        },
+        {
           key: 'alertNotifications',
           type: 'toggle',
           toggleKey: 'alertNotifications',

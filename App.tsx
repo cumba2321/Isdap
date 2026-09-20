@@ -1,11 +1,12 @@
 import { StatusBar } from 'expo-status-bar';
+import * as Notifications from 'expo-notifications';
 import { limitToLast, onValue, orderByChild, push, query, ref, set, update } from 'firebase/database';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { SafeAreaView, Vibration, View } from 'react-native';
+import { Alert, Platform, SafeAreaView, Vibration, View } from 'react-native';
 
 import TabBar from './components/TabBar';
 import { db as database } from './firebaseConfig';
-import { demoReading, metrics } from './metrics';
+import { demoReading, formatValue, metrics } from './metrics';
 import AlertScreen from './screens/AlertScreen';
 import DashboardScreen from './screens/DashboardScreen';
 import HistoryScreen from './screens/HistoryScreen';
@@ -29,6 +30,15 @@ const FIREBASE_PATH = 'live_data';
 const HISTORY_PATH = 'sensor_history';
 const ACCOUNTS_PATH = 'IsdaApp/accounts';
 
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+});
+
 type AuthScreen = 'login' | 'signup';
 
 type StoredAccount = Account & {
@@ -37,6 +47,7 @@ type StoredAccount = Account & {
 };
 
 const DEFAULT_PREFERENCES: NotificationPreferences = {
+  pushNotifications: true,
   alertNotifications: true,
   warningNotifications: true,
   smsNotifications: false,
@@ -70,6 +81,7 @@ export default function App() {
   const [clearedAlertsAt, setClearedAlertsAt] = useState<number | null>(null);
   const [historyLogs, setHistoryLogs] = useState<SensorLog[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
+  const [pushPermissionGranted, setPushPermissionGranted] = useState(false);
 
   const isAuthenticated = farmId !== null;
   const currentAccount = farmId ? accounts[farmId] : null;
@@ -170,6 +182,36 @@ export default function App() {
     });
   };
 
+  useEffect(() => {
+    if (!isAuthenticated || !preferences.pushNotifications) {
+      setPushPermissionGranted(false);
+      return;
+    }
+
+    const requestPushPermission = async () => {
+      if (Platform.OS === 'android') {
+        await Notifications.setNotificationChannelAsync('alerts', {
+          name: 'Sensor alerts',
+          importance: Notifications.AndroidImportance.HIGH,
+          vibrationPattern: [0, 250, 250, 250],
+        });
+      }
+
+      const existing = await Notifications.getPermissionsAsync();
+      const permissions = existing.granted ? existing : await Notifications.requestPermissionsAsync();
+      const granted =
+        permissions.granted || permissions.ios?.status === Notifications.IosAuthorizationStatus.PROVISIONAL;
+      setPushPermissionGranted(granted);
+
+      if (!granted) {
+        Alert.alert('Notifications are disabled', 'Allow notifications in your device settings to receive sensor alerts.');
+        togglePreference('pushNotifications');
+      }
+    };
+
+    requestPushPermission();
+  }, [isAuthenticated, preferences.pushNotifications]);
+
   // Pull live sensor data, unless Auto Refresh is turned off in Settings.
   useEffect(() => {
     const historyQuery = query(ref(database, HISTORY_PATH), orderByChild('recordedAt'), limitToLast(50));
@@ -263,6 +305,32 @@ export default function App() {
   }, [reading, alertDetectedAt]);
 
   const hasAlert = activeAlerts.length > 0;
+
+  // Notify only when a metric enters or changes alert severity, not on every refresh.
+  const previousSeverities = useRef<Partial<Record<MetricKey, string>>>({});
+  useEffect(() => {
+    const currentSeverities: Partial<Record<MetricKey, string>> = {};
+
+    activeAlerts.forEach((alert) => {
+      currentSeverities[alert.metric.key] = alert.severity;
+      if (
+        preferences.pushNotifications &&
+        pushPermissionGranted &&
+        previousSeverities.current[alert.metric.key] !== alert.severity
+      ) {
+        Notifications.scheduleNotificationAsync({
+          content: {
+            title: `${alert.severity === 'critical' ? 'Critical' : 'Warning'}: ${alert.metric.label}`,
+            body: `${formatValue(alert.value, alert.metric.key)} ${alert.metric.unit} is outside the safe range.`,
+            sound: 'default',
+          },
+          trigger: null,
+        });
+      }
+    });
+
+    previousSeverities.current = currentSeverities;
+  }, [activeAlerts, preferences.pushNotifications, pushPermissionGranted]);
 
   // Vibrate on newly detected critical alerts, if Sound Alerts is enabled.
   const previousCriticalKeys = useRef<Set<MetricKey>>(new Set());

@@ -44,6 +44,7 @@ export type Account = {
 };
  
 export type NotificationPreferences = {
+  pushNotifications: boolean;
   alertNotifications: boolean;
   warningNotifications: boolean;
   smsNotifications: boolean;
