@@ -319,6 +319,7 @@ export default function App() {
             phoneNumber={currentAccount?.phoneNumber ?? ''}
             reading={reading}
             lastUpdated={lastUpdated}
+            historyLogs={historyLogs}
             preferences={preferences}
             onTogglePreference={togglePreference}
             onChangePassword={handleChangePassword}

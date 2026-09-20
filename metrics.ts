@@ -16,10 +16,10 @@ export const metrics: Metric[] = [
     unit: 'C',
     icon: 'TEMP',
     color: '#f6a85f',
-    range: '24 - 32 C',
+    range: '25 - 32 C',
     getSeverity: (value): Severity | null => {
-      if (value < 15 || value > 38) return 'critical';
-      if (value < 24 || value > 32) return 'warning';
+      if (value < 10 || value > 35) return 'critical';
+      if (value < 25 || value > 32) return 'warning';
       return null;
     },
   },
@@ -29,10 +29,10 @@ export const metrics: Metric[] = [
     unit: 'mg/L',
     icon: 'DO',
     color: '#59c3c3',
-    range: '>= 3 mg/L',
+    range: '> 5 mg/L',
     getSeverity: (value): Severity | null => {
-      if (value < 2) return 'critical';
-      if (value < 3) return 'warning';
+      if (value < 3) return 'critical';
+      if (value <= 5) return 'warning';
       return null;
     },
   },
@@ -42,10 +42,10 @@ export const metrics: Metric[] = [
     unit: 'pH',
     icon: 'pH',
     color: '#c4a7e7',
-    range: '6.5 - 8.5 pH',
+    range: '6.5 - 9.0 pH',
     getSeverity: (value): Severity | null => {
-      if (value < 5 || value > 10) return 'critical';
-      if (value < 6.5 || value > 8.5) return 'warning';
+      if (value < 4 || value > 9) return 'critical';
+      if (value < 6.5) return 'warning';
       return null;
     },
   },
@@ -55,10 +55,10 @@ export const metrics: Metric[] = [
     unit: 'NTU',
     icon: 'TURB',
     color: '#e8c56a',
-    range: '<= 20 NTU',
+    range: '30 - 80 NTU',
     getSeverity: (value): Severity | null => {
-      if (value > 50) return 'critical';
-      if (value > 20) return 'warning';
+      if (value < 10 || value > 150) return 'critical';
+      if (value < 30 || value > 80) return 'warning';
       return null;
     },
   },
@@ -68,8 +68,12 @@ export const metrics: Metric[] = [
     unit: 'mS/cm',
     icon: 'EC',
     color: '#ef7d88',
-    range: 'Informational',
-    getSeverity: () => null,
+    range: '0.1 - 2.0 mS/cm',
+    getSeverity: (value): Severity | null => {
+      if (value > 5) return 'critical';
+      if (value < 0.1 || value > 2) return 'warning';
+      return null;
+    },
   },
   {
     key: 'tds',
@@ -77,8 +81,12 @@ export const metrics: Metric[] = [
     unit: 'ppm',
     icon: 'TDS',
     color: '#86bdf2',
-    range: 'Informational',
-    getSeverity: () => null,
+    range: '150 - 350 ppm',
+    getSeverity: (value): Severity | null => {
+      if (value > 350) return 'critical';
+      if (value < 150) return 'warning';
+      return null;
+    },
   },
 ];
  
