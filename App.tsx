@@ -1,5 +1,5 @@
 import { StatusBar } from 'expo-status-bar';
-import { onValue, ref, set, update } from 'firebase/database';
+import { limitToLast, onValue, orderByChild, push, query, ref, set, update } from 'firebase/database';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { SafeAreaView, Vibration, View } from 'react-native';
 
@@ -8,6 +8,7 @@ import { db as database } from './firebaseConfig';
 import { demoReading, metrics } from './metrics';
 import AlertScreen from './screens/AlertScreen';
 import DashboardScreen from './screens/DashboardScreen';
+import HistoryScreen from './screens/HistoryScreen';
 import LoginScreen from './screens/LoginScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import SignupScreen from './screens/SignupScreen';
@@ -19,11 +20,13 @@ import {
   MetricKey,
   NotificationPreferences,
   PondReading,
+  SensorLog,
   TabKey,
 } from './types';
 
 // The Arduino uploads with: PUT /live_data.json
 const FIREBASE_PATH = 'live_data';
+const HISTORY_PATH = 'sensor_history';
 const ACCOUNTS_PATH = 'IsdaApp/accounts';
 
 type AuthScreen = 'login' | 'signup';
@@ -36,8 +39,9 @@ type StoredAccount = Account & {
 const DEFAULT_PREFERENCES: NotificationPreferences = {
   alertNotifications: true,
   warningNotifications: true,
-  maintenanceAlerts: false,
-  updateNotifications: true,
+  smsNotifications: false,
+  smsCritical: true,
+  smsWarning: false,
   autoRefresh: true,
   soundAlerts: true,
 };
@@ -64,6 +68,8 @@ export default function App() {
   const [accounts, setAccounts] = useState<Record<string, StoredAccount>>(SEED_ACCOUNTS);
   const [preferences, setPreferences] = useState<NotificationPreferences>(DEFAULT_PREFERENCES);
   const [clearedAlertsAt, setClearedAlertsAt] = useState<number | null>(null);
+  const [historyLogs, setHistoryLogs] = useState<SensorLog[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(true);
 
   const isAuthenticated = farmId !== null;
   const currentAccount = farmId ? accounts[farmId] : null;
@@ -88,7 +94,7 @@ export default function App() {
   // after login), sync local preferences state from what's stored.
   useEffect(() => {
     if (!farmId) return;
-    setPreferences(accounts[farmId]?.preferences ?? DEFAULT_PREFERENCES);
+    setPreferences({ ...DEFAULT_PREFERENCES, ...accounts[farmId]?.preferences });
     setClearedAlertsAt(accounts[farmId]?.clearedAlertsAt ?? null);
   }, [farmId, accounts]);
 
@@ -134,12 +140,16 @@ export default function App() {
     return { success: true };
   };
 
-  const handleUpdateFarmName = (newName: string): AuthResult => {
+  const handleUpdateFarmProfile = (newName: string, phoneNumber: string): AuthResult => {
     if (!farmId) return { success: false, error: 'You are not signed in.' };
     const trimmed = newName.trim();
     if (!trimmed) return { success: false, error: 'Farm name cannot be empty.' };
-    setAccounts((prev) => ({ ...prev, [farmId]: { ...prev[farmId], farmName: trimmed } }));
-    update(ref(database, `${ACCOUNTS_PATH}/${farmId}`), { farmName: trimmed });
+    const normalizedPhone = phoneNumber.trim();
+    setAccounts((prev) => ({
+      ...prev,
+      [farmId]: { ...prev[farmId], farmName: trimmed, phoneNumber: normalizedPhone },
+    }));
+    update(ref(database, `${ACCOUNTS_PATH}/${farmId}`), { farmName: trimmed, phoneNumber: normalizedPhone });
     return { success: true };
   };
 
@@ -159,6 +169,24 @@ export default function App() {
       return next;
     });
   };
+
+  // Pull live sensor data, unless Auto Refresh is turned off in Settings.
+  useEffect(() => {
+    const historyQuery = query(ref(database, HISTORY_PATH), orderByChild('recordedAt'), limitToLast(50));
+    const unsubscribe = onValue(
+      historyQuery,
+      (snapshot) => {
+        const data = snapshot.val() as Record<string, (PondReading & { recordedAt?: number }) | null> | null;
+        const logs = Object.entries(data ?? [])
+          .flatMap(([id, value]) => (value?.recordedAt ? [{ ...value, id, recordedAt: value.recordedAt }] : []))
+          .sort((a, b) => b.recordedAt - a.recordedAt);
+        setHistoryLogs(logs);
+        setHistoryLoading(false);
+      },
+      () => setHistoryLoading(false),
+    );
+    return unsubscribe;
+  }, []);
 
   // Pull live sensor data, unless Auto Refresh is turned off in Settings.
   useEffect(() => {
@@ -184,6 +212,8 @@ export default function App() {
           tds: Number(data.tds ?? demoReading.tds),
           turbidity: Number(data.turbidity ?? data.ntu ?? demoReading.turbidity),
         };
+        const recordedAt = Date.now();
+        push(ref(database, HISTORY_PATH), { ...nextReading, recordedAt });
         setReading(nextReading);
         setIsLive(true);
         setLastUpdated(new Date());
@@ -281,17 +311,18 @@ export default function App() {
             onClearAll={handleClearAllAlerts}
           />
         )}
+        {activeTab === 'history' && <HistoryScreen logs={historyLogs} isLoading={historyLoading} />}
         {activeTab === 'settings' && (
           <SettingsScreen
-            isLive={isLive}
             farmId={farmId}
             farmName={currentAccount?.farmName ?? 'Pond one'}
+            phoneNumber={currentAccount?.phoneNumber ?? ''}
             reading={reading}
             lastUpdated={lastUpdated}
             preferences={preferences}
             onTogglePreference={togglePreference}
             onChangePassword={handleChangePassword}
-            onUpdateFarmName={handleUpdateFarmName}
+            onUpdateFarmProfile={handleUpdateFarmProfile}
             onLogout={handleLogout}
           />
         )}

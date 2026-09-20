@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import {
   Alert,
-  Linking,
   Modal,
   Pressable,
   ScrollView,
@@ -16,15 +15,15 @@ import { styles } from '../styles';
 import { AuthResult, NotificationPreferences, PondReading } from '../types';
  
 type SettingsScreenProps = {
-  isLive: boolean;
   farmId: string | null;
   farmName: string;
+  phoneNumber: string;
   reading: PondReading;
   lastUpdated: Date;
   preferences: NotificationPreferences;
   onTogglePreference: (key: keyof NotificationPreferences) => void;
   onChangePassword: (currentPassword: string, newPassword: string) => AuthResult;
-  onUpdateFarmName: (newName: string) => AuthResult;
+  onUpdateFarmProfile: (newName: string, phoneNumber: string) => AuthResult;
   onLogout: () => void;
 };
  
@@ -37,7 +36,7 @@ type RowBase = {
 };
  
 type LinkRow = RowBase & { type: 'link'; onPress: () => void };
-type ToggleRow = RowBase & { type: 'toggle'; toggleKey: keyof NotificationPreferences };
+type ToggleRow = RowBase & { type: 'toggle'; toggleKey: keyof NotificationPreferences; disabled?: boolean };
 type ActionRow = RowBase & { type: 'action'; onPress: () => void; badge: string };
  
 type Row = LinkRow | ToggleRow | ActionRow;
@@ -45,25 +44,22 @@ type Row = LinkRow | ToggleRow | ActionRow;
 const SWITCH_TRACK_COLOR = { false: '#2b444b', true: '#59c3c377' };
 const SWITCH_THUMB_COLOR = { off: '#7fa7aa', on: '#59c3c3' };
  
-const APP_VERSION = '1.0.0';
- 
 export default function SettingsScreen({
-  isLive,
   farmId,
   farmName,
+  phoneNumber,
   reading,
   lastUpdated,
   preferences,
   onTogglePreference,
   onChangePassword,
-  onUpdateFarmName,
+  onUpdateFarmProfile,
   onLogout,
 }: SettingsScreenProps) {
-  const [activeModal, setActiveModal] = useState<'farmProfile' | 'changePassword' | 'systemInfo' | 'about' | null>(
-    null,
-  );
+  const [activeModal, setActiveModal] = useState<'farmProfile' | 'changePassword' | null>(null);
  
   const [farmNameDraft, setFarmNameDraft] = useState(farmName);
+  const [phoneNumberDraft, setPhoneNumberDraft] = useState(phoneNumber);
   const [farmProfileError, setFarmProfileError] = useState<string | null>(null);
  
   const [currentPassword, setCurrentPassword] = useState('');
@@ -82,12 +78,13 @@ export default function SettingsScreen({
  
   const openFarmProfile = () => {
     setFarmNameDraft(farmName);
+    setPhoneNumberDraft(phoneNumber);
     setFarmProfileError(null);
     setActiveModal('farmProfile');
   };
  
   const handleSaveFarmName = () => {
-    const result = onUpdateFarmName(farmNameDraft);
+    const result = onUpdateFarmProfile(farmNameDraft, phoneNumberDraft);
     if (!result.success) {
       setFarmProfileError(result.error);
       return;
@@ -143,16 +140,6 @@ export default function SettingsScreen({
     }
   };
  
-  const handleHelpSupport = async () => {
-    const url = 'mailto:support@isdaapp.io?subject=IsdaApp%20Support&body=Farm%20ID%3A%20' + (farmId ?? '');
-    const canOpen = await Linking.canOpenURL(url);
-    if (canOpen) {
-      Linking.openURL(url);
-    } else {
-      Alert.alert('No email app found', 'Reach us at support@isdaapp.io');
-    }
-  };
- 
   const sections: { title: string; icon: string; rows: Row[] }[] = [
     {
       title: 'ACCOUNT',
@@ -201,22 +188,33 @@ export default function SettingsScreen({
           subtitle: 'Show warning alerts on the Alerts tab',
         },
         {
-          key: 'maintenanceAlerts',
+          key: 'smsNotifications',
           type: 'toggle',
-          toggleKey: 'maintenanceAlerts',
-          icon: '🔧',
-          iconBg: '#91afb022',
-          title: 'Maintenance Alerts',
-          subtitle: 'System maintenance notifications',
+          toggleKey: 'smsNotifications',
+          icon: 'SMS',
+          iconBg: '#59c3c322',
+          title: 'SMS Notifications',
+          subtitle: preferences.smsNotifications ? 'SMS alerts are enabled' : 'SMS alerts are disabled',
         },
         {
-          key: 'updateNotifications',
+          key: 'smsCritical',
           type: 'toggle',
-          toggleKey: 'updateNotifications',
-          icon: '📲',
-          iconBg: '#86bdf222',
-          title: 'Update Notifications',
-          subtitle: 'App and system updates',
+          toggleKey: 'smsCritical',
+          disabled: !preferences.smsNotifications,
+          icon: '🚨',
+          iconBg: '#ef7d8822',
+          title: 'SMS Critical Alerts',
+          subtitle: 'Send an SMS for critical sensor readings',
+        },
+        {
+          key: 'smsWarning',
+          type: 'toggle',
+          toggleKey: 'smsWarning',
+          disabled: !preferences.smsNotifications,
+          icon: '⚠️',
+          iconBg: '#e8c56a22',
+          title: 'SMS Warning Alerts',
+          subtitle: 'Send an SMS for warning sensor readings',
         },
       ],
     },
@@ -251,39 +249,6 @@ export default function SettingsScreen({
           subtitle: 'Share the latest reading as a CSV',
           badge: '📤',
           onPress: handleDownloadData,
-        },
-        {
-          key: 'systemInfo',
-          type: 'link',
-          icon: 'ℹ️',
-          iconBg: '#86bdf222',
-          title: 'System Info',
-          subtitle: `v${APP_VERSION} · ${isLive ? 'Live data connected' : 'Demo data mode'}`,
-          onPress: () => setActiveModal('systemInfo'),
-        },
-      ],
-    },
-    {
-      title: 'SUPPORT',
-      icon: '💬',
-      rows: [
-        {
-          key: 'helpSupport',
-          type: 'link',
-          icon: '🆘',
-          iconBg: '#ef7d8822',
-          title: 'Help & Support',
-          subtitle: 'Email support@isdaapp.io',
-          onPress: handleHelpSupport,
-        },
-        {
-          key: 'about',
-          type: 'link',
-          icon: '📋',
-          iconBg: '#91afb022',
-          title: 'About ISDAAPP',
-          subtitle: 'App information and credits',
-          onPress: () => setActiveModal('about'),
         },
       ],
     },
@@ -320,6 +285,7 @@ export default function SettingsScreen({
                     <Switch
                       value={preferences[row.toggleKey]}
                       onValueChange={() => onTogglePreference(row.toggleKey)}
+                      disabled={row.disabled}
                       trackColor={SWITCH_TRACK_COLOR}
                       thumbColor={preferences[row.toggleKey] ? SWITCH_THUMB_COLOR.on : SWITCH_THUMB_COLOR.off}
                     />
@@ -391,6 +357,21 @@ export default function SettingsScreen({
             </View>
  
             <Text style={styles.settingsRowSubtitle}>Farm ID: {farmId} (cannot be changed)</Text>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>SMS PHONE NUMBER</Text>
+              <View style={styles.inputRow}>
+                <TextInput
+                  value={phoneNumberDraft}
+                  onChangeText={setPhoneNumberDraft}
+                  placeholder="e.g. +639171234567"
+                  placeholderTextColor="#4f6b6d"
+                  keyboardType="phone-pad"
+                  style={styles.textInput}
+                />
+              </View>
+              <Text style={styles.settingsRowSubtitle}>Use international format, including the country code.</Text>
+            </View>
  
             <View style={styles.modalButtonRow}>
               <Pressable onPress={closeModal} style={[styles.secondaryButton, styles.modalButtonHalf]}>
@@ -472,54 +453,6 @@ export default function SettingsScreen({
         </View>
       </Modal>
  
-      {/* System Info modal */}
-      <Modal visible={activeModal === 'systemInfo'} transparent animationType="fade" onRequestClose={closeModal}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <Text style={styles.authCardTitle}>System Info</Text>
-            <Text style={styles.authCardSubtitle}>Live details about this station</Text>
- 
-            {[
-              ['App version', APP_VERSION],
-              ['Connection', isLive ? 'Live · Firebase Realtime Database' : 'Demo data (no live connection)'],
-              ['Farm ID', farmId ?? '—'],
-              ['Last updated', lastUpdated.toLocaleString()],
-              ['Monitored parameters', '6 (temp, DO, pH, turbidity, EC, TDS)'],
-            ].map(([label, value]) => (
-              <View key={label} style={styles.settingsRowInner}>
-                <View style={styles.settingsRowBody}>
-                  <Text style={styles.settingsRowTitle}>{label}</Text>
-                  <Text style={styles.settingsRowSubtitle}>{value}</Text>
-                </View>
-              </View>
-            ))}
- 
-            <Pressable onPress={closeModal} style={[styles.primaryButton, { marginTop: 16 }]}>
-              <Text style={styles.primaryButtonText}>Close</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
- 
-      {/* About modal */}
-      <Modal visible={activeModal === 'about'} transparent animationType="fade" onRequestClose={closeModal}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <Text style={styles.authCardTitle}>About ISDAAPP</Text>
-            <Text style={styles.authCardSubtitle}>IoT Water Quality Monitoring System</Text>
-            <Text style={styles.settingsRowSubtitle}>
-              IsdaApp helps pond and hatchery operators keep an eye on temperature, dissolved oxygen, pH,
-              turbidity, conductivity, and total dissolved solids in real time, with alerts when a reading
-              drifts outside a safe range.
-            </Text>
-            <Text style={[styles.settingsRowSubtitle, { marginTop: 12 }]}>Version {APP_VERSION}</Text>
- 
-            <Pressable onPress={closeModal} style={[styles.primaryButton, { marginTop: 16 }]}>
-              <Text style={styles.primaryButtonText}>Close</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
     </ScrollView>
   );
 }

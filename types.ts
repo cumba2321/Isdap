@@ -6,8 +6,13 @@ export type PondReading = {
   tds: number;
   turbidity: number;
 };
+
+export type SensorLog = PondReading & {
+  id: string;
+  recordedAt: number;
+};
  
-export type TabKey = 'dashboard' | 'alert' | 'settings';
+export type TabKey = 'dashboard' | 'history' | 'alert' | 'settings';
  
 export type MetricKey = keyof PondReading;
  
@@ -35,13 +40,15 @@ export type Account = {
   email: string;
   password: string;
   farmName: string;
+  phoneNumber?: string;
 };
  
 export type NotificationPreferences = {
   alertNotifications: boolean;
   warningNotifications: boolean;
-  maintenanceAlerts: boolean;
-  updateNotifications: boolean;
+  smsNotifications: boolean;
+  smsCritical: boolean;
+  smsWarning: boolean;
   autoRefresh: boolean;
   soundAlerts: boolean;
 };

@@ -54,6 +54,12 @@ export default function TabBar({ activeTab, onChangeTab, hasAlert }: TabBarProps
         badge={hasAlert}
       />
       <TabButton
+        label="History"
+        icon="HIST"
+        active={activeTab === 'history'}
+        onPress={() => onChangeTab('history')}
+      />
+      <TabButton
         label="Settings"
         icon="SET"
         active={activeTab === 'settings'}

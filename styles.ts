@@ -140,6 +140,26 @@ export const styles = StyleSheet.create({
   tabLabelActive: { color: '#f4f0e7' },
  
   screenSubtitle: { color: '#7fa7aa', fontSize: 13, marginTop: 4 },
+  historyCount: {
+    alignItems: 'center',
+    backgroundColor: '#21434a',
+    borderRadius: 16,
+    minWidth: 56,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  historyCountText: { color: '#f4f0e7', fontSize: 18, fontWeight: '800' },
+  historyCountLabel: { color: '#91c8c3', fontSize: 9, fontWeight: '800', letterSpacing: 1 },
+  historyStatus: { color: '#91afb0', fontSize: 13, paddingVertical: 20, textAlign: 'center' },
+  historyCard: { backgroundColor: '#183139', borderRadius: 18, marginBottom: 12, padding: 16 },
+  historyCardHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginBottom: 14 },
+  historyCardTitle: { color: '#f4f0e7', fontSize: 15, fontWeight: '800' },
+  historyCardTime: { color: '#91afb0', fontSize: 11 },
+  historyMetricGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  historyMetric: { backgroundColor: '#102127', borderRadius: 10, padding: 10, width: '48%' },
+  historyMetricLabel: { color: '#719092', fontSize: 10 },
+  historyMetricValue: { color: '#f4f0e7', fontSize: 15, fontWeight: '800', marginTop: 4 },
+  historyMetricUnit: { color: '#91afb0', fontSize: 10, fontWeight: '400' },
  
   alertsSummaryCard: {
     borderRadius: 18,
