@@ -14,31 +14,41 @@ import AuthHeader from '../components/AuthHeader';
 import { AuthResult } from '../types';
  
 type LoginScreenProps = {
-  onSignIn: (farmId: string, password: string) => AuthResult;
+  onSignIn: (farmId: string, password: string, pin: string) => Promise<AuthResult>;
   onNavigateSignUp: () => void;
 };
  
 export default function LoginScreen({ onSignIn, onNavigateSignUp }: LoginScreenProps) {
   const [farmId, setFarmId] = useState('');
   const [password, setPassword] = useState('');
+  const [pin, setPin] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
  
-  const handleSignIn = () => {
-  console.log('LOGIN: pressed', farmId, password);
-  if (!farmId.trim() || !password.trim()) {
-    console.log('LOGIN: validation failed');
-    setError('Enter your farm ID and password to continue.');
-    return;
-  }
-      const result = onSignIn(farmId.trim(), password);
-      console.log('LOGIN: result', result);
+  const handleSignIn = async () => {
+    if (!farmId.trim() || !password.trim()) {
+      setError('Enter your farm ID and password to continue.');
+      return;
+    }
+    if (!/^\d{4}$/.test(pin)) {
+      setError('Enter a 4-digit PIN.');
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      const result = await onSignIn(farmId.trim(), password, pin);
       if (!result.success) {
         setError(result.error);
         return;
       }
       setError(null);
-      };
+    } catch {
+      setError('Unable to sign in right now. Check your connection and try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
  
   return (
     <KeyboardAvoidingView
@@ -51,7 +61,7 @@ export default function LoginScreen({ onSignIn, onNavigateSignUp }: LoginScreenP
  
         <View style={styles.authCard}>
           <Text style={styles.authCardTitle}>Sign In</Text>
-          <Text style={styles.authCardSubtitle}>Enter your farm credentials to continue</Text>
+          <Text style={styles.authCardSubtitle}>Enter your credentials and 4-digit PIN</Text>
  
           <View style={styles.inputGroup}>
             <Text style={styles.inputLabel}>FARM ID / USERNAME</Text>
@@ -69,6 +79,24 @@ export default function LoginScreen({ onSignIn, onNavigateSignUp }: LoginScreenP
           </View>
  
           <View style={styles.inputGroup}>
+            <Text style={styles.inputLabel}>4-DIGIT PIN</Text>
+            <View style={styles.inputRow}>
+              <TextInput
+                value={pin}
+                onChangeText={(value) => setPin(value.replace(/\D/g, '').slice(0, 4))}
+                placeholder="Enter or create your PIN"
+                placeholderTextColor="#4f6b6d"
+                keyboardType="number-pad"
+                secureTextEntry
+                maxLength={4}
+                autoCapitalize="none"
+                style={styles.textInput}
+              />
+            </View>
+            {error ? <Text style={styles.fieldErrorText}>{error}</Text> : null}
+          </View>
+
+          <View style={styles.inputGroup}>
             <Text style={styles.inputLabel}>PASSWORD</Text>
             <View style={styles.inputRow}>
               <TextInput
@@ -84,14 +112,14 @@ export default function LoginScreen({ onSignIn, onNavigateSignUp }: LoginScreenP
                 <Text style={styles.showToggleText}>{showPassword ? 'Hide' : 'Show'}</Text>
               </Pressable>
             </View>
-            {error ? <Text style={styles.fieldErrorText}>{error}</Text> : null}
           </View>
  
           <Pressable
             onPress={handleSignIn}
-            style={({ pressed }) => [styles.primaryButton, pressed && styles.tabButtonPressed]}
+            disabled={isSubmitting}
+            style={({ pressed }) => [styles.primaryButton, isSubmitting && styles.primaryButtonDisabled, pressed && styles.tabButtonPressed]}
           >
-            <Text style={styles.primaryButtonText}>Sign In</Text>
+            <Text style={styles.primaryButtonText}>{isSubmitting ? 'Signing In...' : 'Sign In'}</Text>
           </Pressable>
  
           <View style={styles.authLinkRow}>
@@ -107,7 +135,7 @@ export default function LoginScreen({ onSignIn, onNavigateSignUp }: LoginScreenP
         </View>
  
         <View style={styles.authLinkRow}>
-          <Text style={styles.authLinkText}>Demo login: pond_farm_01 / password123</Text>
+          <Text style={styles.authLinkText}>Demo: pond_farm_01 / password123 / PIN 1234</Text>
         </View>
       </ScrollView>
     </KeyboardAvoidingView>

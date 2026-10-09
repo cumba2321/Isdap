@@ -1,6 +1,6 @@
 import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
-import { limitToLast, onValue, orderByChild, push, query, ref, set, update } from 'firebase/database';
+import { limitToLast, onValue, orderByChild, push, query, ref, runTransaction, set, update } from 'firebase/database';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Platform, SafeAreaView, Vibration, View } from 'react-native';
 
@@ -63,6 +63,7 @@ const SEED_ACCOUNTS: Record<string, StoredAccount> = {
   pond_farm_01: {
     email: 'demo@isdaapp.io',
     password: 'password123',
+    pin: '1234',
     farmName: 'Pond one',
     preferences: DEFAULT_PREFERENCES,
   },
@@ -95,8 +96,11 @@ export default function App() {
       if (data) {
         setAccounts(data);
       } else {
-        set(accountsRef, SEED_ACCOUNTS);
-        setAccounts(SEED_ACCOUNTS);
+        void runTransaction(accountsRef, (current) => current ?? SEED_ACCOUNTS)
+          .then(({ snapshot }) => {
+            setAccounts((snapshot.val() as Record<string, StoredAccount> | null) ?? SEED_ACCOUNTS);
+          })
+          .catch(() => undefined);
       }
     });
     return unsubscribe;
@@ -110,28 +114,77 @@ export default function App() {
     setClearedAlertsAt(accounts[farmId]?.clearedAlertsAt ?? null);
   }, [farmId, accounts]);
 
-  const handleSignIn = (id: string, password: string): AuthResult => {
-    const account = accounts[id];
+  const handleSignIn = async (id: string, password: string, pin: string): Promise<AuthResult> => {
+    const normalizedId = id.trim().toLowerCase();
+    const accountEntry = Object.entries(accounts).find(([key]) => key.toLowerCase() === normalizedId);
+    if (!accountEntry) return { success: false, error: 'Incorrect farm ID, password, or PIN.' };
+    const [accountId, account] = accountEntry;
     if (!account || account.password !== password) {
-      return { success: false, error: 'Incorrect farm ID or password.' };
+      return { success: false, error: 'Incorrect farm ID, password, or PIN.' };
     }
-    setFarmId(id);
+    if (account.pin && account.pin !== pin) {
+      return { success: false, error: 'Incorrect farm ID, password, or PIN.' };
+    }
+    if (!account.pin) {
+      const accountRef = ref(database, `${ACCOUNTS_PATH}/${accountId}`);
+      const result = await runTransaction(accountRef, (current) => {
+        if (!current || current.password !== password) return;
+        if (typeof current.pin === 'string') return current;
+        return { ...current, pin };
+      });
+      const storedAccount = result.snapshot.val() as StoredAccount | null;
+      if (!storedAccount || storedAccount.pin !== pin) {
+        return { success: false, error: 'PIN setup failed. Check your connection and try again.' };
+      }
+      setAccounts((previous) => ({ ...previous, [accountId]: storedAccount }));
+    }
+    setFarmId(accountId);
     return { success: true };
   };
 
-  const handleSignUp = (id: string, email: string, password: string): AuthResult => {
-    if (accounts[id]) {
-      return { success: false, error: 'That farm ID is already registered.' };
+  const handleSignUp = async (id: string, email: string, password: string, pin: string): Promise<AuthResult> => {
+    const normalizedId = id.trim().toLowerCase();
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!/^[a-z0-9_-]{3,32}$/.test(normalizedId)) {
+      return { success: false, error: 'Farm ID must be 3-32 characters using letters, numbers, _ or -.' };
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      return { success: false, error: 'Enter a valid email address.' };
+    }
+    if (!/^\d{4}$/.test(pin)) {
+      return { success: false, error: 'PIN must contain exactly 4 digits.' };
     }
     const newAccount: StoredAccount = {
-      email,
+      email: normalizedEmail,
       password,
+      pin,
       farmName: 'Pond one',
       preferences: DEFAULT_PREFERENCES,
     };
-    setAccounts((prev) => ({ ...prev, [id]: newAccount }));
-    set(ref(database, `${ACCOUNTS_PATH}/${id}`), newAccount);
-    setFarmId(id);
+
+    let duplicate: 'farm ID' | 'email' | null = null;
+    const accountsRef = ref(database, ACCOUNTS_PATH);
+    const result = await runTransaction(accountsRef, (current) => {
+      const registry = (current as Record<string, StoredAccount> | null) ?? SEED_ACCOUNTS;
+      duplicate = null;
+      for (const [existingId, existingAccount] of Object.entries(registry)) {
+        if (existingId.toLowerCase() === normalizedId) {
+          duplicate = 'farm ID';
+          return;
+        }
+        if (existingAccount.email?.trim().toLowerCase() === normalizedEmail) {
+          duplicate = 'email';
+          return;
+        }
+      }
+      return { ...registry, [normalizedId]: newAccount };
+    });
+
+    if (!result.committed) {
+      return { success: false, error: duplicate ? `That ${duplicate} is already registered.` : 'Account creation was cancelled. Please try again.' };
+    }
+    setAccounts((result.snapshot.val() as Record<string, StoredAccount> | null) ?? {});
+    setFarmId(normalizedId);
     return { success: true };
   };
 

@@ -14,7 +14,7 @@ import AuthHeader from '../components/AuthHeader';
 import { AuthResult } from '../types';
  
 type SignupScreenProps = {
-  onSignUp: (farmId: string, email: string, password: string) => AuthResult;
+  onSignUp: (farmId: string, email: string, password: string, pin: string) => Promise<AuthResult>;
   onNavigateSignIn: () => void;
 };
  
@@ -23,11 +23,14 @@ export default function SignupScreen({ onSignUp, onNavigateSignIn }: SignupScree
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [pin, setPin] = useState('');
+  const [confirmPin, setConfirmPin] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
  
-  const handleSignUp = () => {
+  const handleSignUp = async () => {
     if (!farmId.trim() || !email.trim() || !password.trim() || !confirmPassword.trim()) {
       setError('Fill in every field to create your account.');
       return;
@@ -40,12 +43,27 @@ export default function SignupScreen({ onSignUp, onNavigateSignIn }: SignupScree
       setError('Password must be at least 6 characters.');
       return;
     }
-    const result = onSignUp(farmId.trim(), email.trim(), password);
-    if (!result.success) {
-      setError(result.error);
+    if (!/^\d{4}$/.test(pin)) {
+      setError('Create a 4-digit PIN.');
       return;
     }
-    setError(null);
+    if (pin !== confirmPin) {
+      setError('PINs do not match.');
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      const result = await onSignUp(farmId.trim(), email.trim(), password, pin);
+      if (!result.success) {
+        setError(result.error);
+        return;
+      }
+      setError(null);
+    } catch {
+      setError('Unable to create your account right now. Check your connection and try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
  
   return (
@@ -111,6 +129,38 @@ export default function SignupScreen({ onSignUp, onNavigateSignIn }: SignupScree
           </View>
  
           <View style={styles.inputGroup}>
+            <Text style={styles.inputLabel}>CREATE 4-DIGIT PIN</Text>
+            <View style={styles.inputRow}>
+              <TextInput
+                value={pin}
+                onChangeText={(value) => setPin(value.replace(/\D/g, '').slice(0, 4))}
+                placeholder="Choose a 4-digit PIN"
+                placeholderTextColor="#4f6b6d"
+                keyboardType="number-pad"
+                secureTextEntry
+                maxLength={4}
+                style={styles.textInput}
+              />
+            </View>
+          </View>
+
+          <View style={styles.inputGroup}>
+            <Text style={styles.inputLabel}>CONFIRM PIN</Text>
+            <View style={styles.inputRow}>
+              <TextInput
+                value={confirmPin}
+                onChangeText={(value) => setConfirmPin(value.replace(/\D/g, '').slice(0, 4))}
+                placeholder="Enter the PIN again"
+                placeholderTextColor="#4f6b6d"
+                keyboardType="number-pad"
+                secureTextEntry
+                maxLength={4}
+                style={styles.textInput}
+              />
+            </View>
+          </View>
+
+          <View style={styles.inputGroup}>
             <Text style={styles.inputLabel}>CONFIRM PASSWORD</Text>
             <View style={styles.inputRow}>
               <TextInput
@@ -131,9 +181,10 @@ export default function SignupScreen({ onSignUp, onNavigateSignIn }: SignupScree
  
           <Pressable
             onPress={handleSignUp}
-            style={({ pressed }) => [styles.primaryButton, pressed && styles.tabButtonPressed]}
+            disabled={isSubmitting}
+            style={({ pressed }) => [styles.primaryButton, isSubmitting && styles.primaryButtonDisabled, pressed && styles.tabButtonPressed]}
           >
-            <Text style={styles.primaryButtonText}>Sign Up</Text>
+            <Text style={styles.primaryButtonText}>{isSubmitting ? 'Creating Account...' : 'Sign Up'}</Text>
           </Pressable>
  
           <Pressable
