@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 import { ScrollView, Text, View } from 'react-native';
+=======
+import { Image, ScrollView, Text, View } from 'react-native';
+>>>>>>> origin/main
 import { formatValue, metrics } from '../metrics';
 import { styles } from '../styles';
 import { PondReading } from '../types';
@@ -23,9 +27,23 @@ export default function DashboardScreen({
   return (
     <ScrollView contentContainerStyle={styles.content}>
       <View style={styles.header}>
+<<<<<<< HEAD
         <View>
           <Text style={styles.eyebrow}>ISDAAPP / WATER STATION</Text>
           <Text style={styles.title}>{farmName}</Text>
+=======
+        <View style={{ alignItems: 'center', flexDirection: 'row' }}>
+          <Image
+            source={require('../assets/isdapp-logo.png')}
+            style={{ height: 42, marginRight: 10, width: 42 }}
+            resizeMode="contain"
+            accessibilityLabel="IsdaApp water-quality logo"
+          />
+          <View>
+            <Text style={styles.eyebrow}>ISDAAPP / WATER STATION</Text>
+            <Text style={styles.title}>{farmName}</Text>
+          </View>
+>>>>>>> origin/main
         </View>
         <View style={styles.stationBadge}>
           <View style={[styles.statusDot, isLive ? styles.liveDot : styles.demoDot]} />
@@ -75,7 +93,11 @@ export default function DashboardScreen({
                 <View style={[styles.metricIcon, { backgroundColor: `${metric.color}22` }]}>
                   <Text style={[styles.metricIconText, { color: metric.color }]}>{metric.icon}</Text>
                 </View>
+<<<<<<< HEAD
                 <View style={[styles.healthDot, { backgroundColor: isHealthy ? '#59c3c3' : '#ef7d88' }]} />
+=======
+                <View style={[styles.healthDot, { backgroundColor: isHealthy ? '#078A95' : '#C84F5B' }]} />
+>>>>>>> origin/main
               </View>
               <Text style={styles.metricLabel}>{metric.label}</Text>
               <Text style={styles.metricValue}>{formatValue(value, metric.key)}</Text>

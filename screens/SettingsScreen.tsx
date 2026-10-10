@@ -43,8 +43,13 @@ type ActionRow = RowBase & { type: 'action'; onPress: () => void; badge: string 
  
 type Row = LinkRow | ToggleRow | ActionRow;
  
+<<<<<<< HEAD
 const SWITCH_TRACK_COLOR = { false: '#2b444b', true: '#59c3c377' };
 const SWITCH_THUMB_COLOR = { off: '#7fa7aa', on: '#59c3c3' };
+=======
+const SWITCH_TRACK_COLOR = { false: '#CAD9DE', true: '#84C8CC' };
+const SWITCH_THUMB_COLOR = { off: '#60777E', on: '#078A95' };
+>>>>>>> origin/main
 
 const thresholdReference = [
   {
@@ -243,7 +248,11 @@ export default function SettingsScreen({
           key: 'farmProfile',
           type: 'link',
           icon: '🌾',
+<<<<<<< HEAD
           iconBg: '#e8c56a22',
+=======
+          iconBg: '#FFF3D5',
+>>>>>>> origin/main
           title: 'Farm Profile',
           subtitle: accountEmail ? `${farmName} · ${accountEmail}` : farmName,
           onPress: openFarmProfile,
@@ -259,7 +268,11 @@ export default function SettingsScreen({
           type: 'toggle',
           toggleKey: 'pushNotifications',
           icon: '📲',
+<<<<<<< HEAD
           iconBg: '#59c3c322',
+=======
+          iconBg: '#E6F5F5',
+>>>>>>> origin/main
           title: 'Push Notifications',
           subtitle: 'Notify me for every warning or critical reading',
         },
@@ -268,7 +281,11 @@ export default function SettingsScreen({
           type: 'toggle',
           toggleKey: 'alertNotifications',
           icon: '🚨',
+<<<<<<< HEAD
           iconBg: '#ef7d8822',
+=======
+          iconBg: '#FCE8EA',
+>>>>>>> origin/main
           title: 'Alert Notifications',
           subtitle: 'Show critical alerts on the Alerts tab',
         },
@@ -277,7 +294,11 @@ export default function SettingsScreen({
           type: 'toggle',
           toggleKey: 'warningNotifications',
           icon: '⚠️',
+<<<<<<< HEAD
           iconBg: '#e8c56a22',
+=======
+          iconBg: '#FFF3D5',
+>>>>>>> origin/main
           title: 'Warning Notifications',
           subtitle: 'Show warning alerts on the Alerts tab',
         },
@@ -286,7 +307,11 @@ export default function SettingsScreen({
           type: 'toggle',
           toggleKey: 'smsNotifications',
           icon: 'SMS',
+<<<<<<< HEAD
           iconBg: '#59c3c322',
+=======
+          iconBg: '#E6F5F5',
+>>>>>>> origin/main
           title: 'SMS Notifications',
           subtitle: preferences.smsNotifications ? 'SMS alerts are enabled' : 'SMS alerts are disabled',
         },
@@ -296,7 +321,11 @@ export default function SettingsScreen({
           toggleKey: 'smsCritical',
           disabled: !preferences.smsNotifications,
           icon: '🚨',
+<<<<<<< HEAD
           iconBg: '#ef7d8822',
+=======
+          iconBg: '#FCE8EA',
+>>>>>>> origin/main
           title: 'SMS Critical Alerts',
           subtitle: 'Send an SMS for critical sensor readings',
         },
@@ -306,7 +335,11 @@ export default function SettingsScreen({
           toggleKey: 'smsWarning',
           disabled: !preferences.smsNotifications,
           icon: '⚠️',
+<<<<<<< HEAD
           iconBg: '#e8c56a22',
+=======
+          iconBg: '#FFF3D5',
+>>>>>>> origin/main
           title: 'SMS Warning Alerts',
           subtitle: 'Send an SMS for warning sensor readings',
         },
@@ -321,7 +354,11 @@ export default function SettingsScreen({
           type: 'toggle',
           toggleKey: 'autoRefresh',
           icon: '🔄',
+<<<<<<< HEAD
           iconBg: '#59c3c322',
+=======
+          iconBg: '#E6F5F5',
+>>>>>>> origin/main
           title: 'Auto Refresh',
           subtitle: preferences.autoRefresh ? 'Live sensor updates are on' : 'Paused — showing last known reading',
         },
@@ -330,7 +367,11 @@ export default function SettingsScreen({
           type: 'toggle',
           toggleKey: 'soundAlerts',
           icon: '🔊',
+<<<<<<< HEAD
           iconBg: '#59c3c322',
+=======
+          iconBg: '#E6F5F5',
+>>>>>>> origin/main
           title: 'Sound Alerts',
           subtitle: 'Vibrate when a new critical alert appears',
         },
@@ -338,7 +379,11 @@ export default function SettingsScreen({
           key: 'downloadData',
           type: 'action',
           icon: '⬇️',
+<<<<<<< HEAD
           iconBg: '#91afb022',
+=======
+          iconBg: '#EEF3F5',
+>>>>>>> origin/main
           title: 'Download Data',
           subtitle: 'Share the latest reading as a CSV',
           badge: '📤',
@@ -443,7 +488,11 @@ export default function SettingsScreen({
                   value={farmNameDraft}
                   onChangeText={setFarmNameDraft}
                   placeholder="e.g. Pond one"
+<<<<<<< HEAD
                   placeholderTextColor="#4f6b6d"
+=======
+                  placeholderTextColor="#49656D"
+>>>>>>> origin/main
                   style={styles.textInput}
                 />
               </View>
@@ -459,7 +508,11 @@ export default function SettingsScreen({
                   value={phoneNumberDraft}
                   onChangeText={setPhoneNumberDraft}
                   placeholder="e.g. +639171234567"
+<<<<<<< HEAD
                   placeholderTextColor="#4f6b6d"
+=======
+                  placeholderTextColor="#49656D"
+>>>>>>> origin/main
                   keyboardType="phone-pad"
                   style={styles.textInput}
                 />
@@ -495,7 +548,11 @@ export default function SettingsScreen({
                   value={exportDate}
                   onChangeText={setExportDate}
                   placeholder="YYYY-MM-DD"
+<<<<<<< HEAD
                   placeholderTextColor="#4f6b6d"
+=======
+                  placeholderTextColor="#49656D"
+>>>>>>> origin/main
                   keyboardType="numbers-and-punctuation"
                   style={styles.textInput}
                 />
