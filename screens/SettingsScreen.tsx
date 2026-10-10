@@ -17,16 +17,15 @@ import { AuthResult, NotificationPreferences, PondReading, SensorLog } from '../
 import * as XLSX from 'xlsx';
  
 type SettingsScreenProps = {
-  farmId: string | null;
   farmName: string;
+  accountEmail: string;
   phoneNumber: string;
   reading: PondReading;
   lastUpdated: Date;
   historyLogs: SensorLog[];
   preferences: NotificationPreferences;
   onTogglePreference: (key: keyof NotificationPreferences) => void;
-  onChangePassword: (currentPassword: string, newPassword: string) => AuthResult;
-  onUpdateFarmProfile: (newName: string, phoneNumber: string) => AuthResult;
+  onUpdateFarmProfile: (newName: string, phoneNumber: string) => Promise<AuthResult>;
   onLogout: () => void;
 };
  
@@ -44,8 +43,8 @@ type ActionRow = RowBase & { type: 'action'; onPress: () => void; badge: string 
  
 type Row = LinkRow | ToggleRow | ActionRow;
  
-const SWITCH_TRACK_COLOR = { false: '#2b444b', true: '#59c3c377' };
-const SWITCH_THUMB_COLOR = { off: '#7fa7aa', on: '#59c3c3' };
+const SWITCH_TRACK_COLOR = { false: '#CAD9DE', true: '#84C8CC' };
+const SWITCH_THUMB_COLOR = { off: '#60777E', on: '#078A95' };
 
 const thresholdReference = [
   {
@@ -105,28 +104,23 @@ const thresholdReference = [
 ];
  
 export default function SettingsScreen({
-  farmId,
   farmName,
+  accountEmail,
   phoneNumber,
   reading,
   lastUpdated,
   historyLogs,
   preferences,
   onTogglePreference,
-  onChangePassword,
   onUpdateFarmProfile,
   onLogout,
 }: SettingsScreenProps) {
-  const [activeModal, setActiveModal] = useState<'farmProfile' | 'changePassword' | 'downloadData' | null>(null);
+  const [activeModal, setActiveModal] = useState<'farmProfile' | 'downloadData' | null>(null);
  
   const [farmNameDraft, setFarmNameDraft] = useState(farmName);
   const [phoneNumberDraft, setPhoneNumberDraft] = useState(phoneNumber);
   const [farmProfileError, setFarmProfileError] = useState<string | null>(null);
  
-  const [currentPassword, setCurrentPassword] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [confirmNewPassword, setConfirmNewPassword] = useState('');
-  const [passwordError, setPasswordError] = useState<string | null>(null);
   const [exportDate, setExportDate] = useState(() => {
     const now = new Date();
     return [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-');
@@ -135,10 +129,6 @@ export default function SettingsScreen({
   const closeModal = () => {
     setActiveModal(null);
     setFarmProfileError(null);
-    setPasswordError(null);
-    setCurrentPassword('');
-    setNewPassword('');
-    setConfirmNewPassword('');
   };
  
   const openFarmProfile = () => {
@@ -148,35 +138,13 @@ export default function SettingsScreen({
     setActiveModal('farmProfile');
   };
  
-  const handleSaveFarmName = () => {
-    const result = onUpdateFarmProfile(farmNameDraft, phoneNumberDraft);
+  const handleSaveFarmName = async () => {
+    const result = await onUpdateFarmProfile(farmNameDraft, phoneNumberDraft);
     if (!result.success) {
       setFarmProfileError(result.error);
       return;
     }
     closeModal();
-  };
- 
-  const handleSavePassword = () => {
-    if (!currentPassword.trim() || !newPassword.trim() || !confirmNewPassword.trim()) {
-      setPasswordError('Fill in all three fields.');
-      return;
-    }
-    if (newPassword !== confirmNewPassword) {
-      setPasswordError('New passwords do not match.');
-      return;
-    }
-    if (newPassword.length < 6) {
-      setPasswordError('New password must be at least 6 characters.');
-      return;
-    }
-    const result = onChangePassword(currentPassword, newPassword);
-    if (!result.success) {
-      setPasswordError(result.error);
-      return;
-    }
-    closeModal();
-    Alert.alert('Password updated', 'Your password has been changed.');
   };
  
   const handleDownloadData = async () => {
@@ -275,19 +243,10 @@ export default function SettingsScreen({
           key: 'farmProfile',
           type: 'link',
           icon: '🌾',
-          iconBg: '#e8c56a22',
+          iconBg: '#FFF3D5',
           title: 'Farm Profile',
-          subtitle: farmId ? `${farmName} · ${farmId}` : 'Manage farm information',
+          subtitle: accountEmail ? `${farmName} · ${accountEmail}` : farmName,
           onPress: openFarmProfile,
-        },
-        {
-          key: 'changePassword',
-          type: 'link',
-          icon: '🔒',
-          iconBg: '#86bdf222',
-          title: 'Change Password',
-          subtitle: 'Update your login credentials',
-          onPress: () => setActiveModal('changePassword'),
         },
       ],
     },
@@ -300,7 +259,7 @@ export default function SettingsScreen({
           type: 'toggle',
           toggleKey: 'pushNotifications',
           icon: '📲',
-          iconBg: '#59c3c322',
+          iconBg: '#E6F5F5',
           title: 'Push Notifications',
           subtitle: 'Notify me for every warning or critical reading',
         },
@@ -309,7 +268,7 @@ export default function SettingsScreen({
           type: 'toggle',
           toggleKey: 'alertNotifications',
           icon: '🚨',
-          iconBg: '#ef7d8822',
+          iconBg: '#FCE8EA',
           title: 'Alert Notifications',
           subtitle: 'Show critical alerts on the Alerts tab',
         },
@@ -318,7 +277,7 @@ export default function SettingsScreen({
           type: 'toggle',
           toggleKey: 'warningNotifications',
           icon: '⚠️',
-          iconBg: '#e8c56a22',
+          iconBg: '#FFF3D5',
           title: 'Warning Notifications',
           subtitle: 'Show warning alerts on the Alerts tab',
         },
@@ -327,7 +286,7 @@ export default function SettingsScreen({
           type: 'toggle',
           toggleKey: 'smsNotifications',
           icon: 'SMS',
-          iconBg: '#59c3c322',
+          iconBg: '#E6F5F5',
           title: 'SMS Notifications',
           subtitle: preferences.smsNotifications ? 'SMS alerts are enabled' : 'SMS alerts are disabled',
         },
@@ -337,7 +296,7 @@ export default function SettingsScreen({
           toggleKey: 'smsCritical',
           disabled: !preferences.smsNotifications,
           icon: '🚨',
-          iconBg: '#ef7d8822',
+          iconBg: '#FCE8EA',
           title: 'SMS Critical Alerts',
           subtitle: 'Send an SMS for critical sensor readings',
         },
@@ -347,7 +306,7 @@ export default function SettingsScreen({
           toggleKey: 'smsWarning',
           disabled: !preferences.smsNotifications,
           icon: '⚠️',
-          iconBg: '#e8c56a22',
+          iconBg: '#FFF3D5',
           title: 'SMS Warning Alerts',
           subtitle: 'Send an SMS for warning sensor readings',
         },
@@ -362,7 +321,7 @@ export default function SettingsScreen({
           type: 'toggle',
           toggleKey: 'autoRefresh',
           icon: '🔄',
-          iconBg: '#59c3c322',
+          iconBg: '#E6F5F5',
           title: 'Auto Refresh',
           subtitle: preferences.autoRefresh ? 'Live sensor updates are on' : 'Paused — showing last known reading',
         },
@@ -371,7 +330,7 @@ export default function SettingsScreen({
           type: 'toggle',
           toggleKey: 'soundAlerts',
           icon: '🔊',
-          iconBg: '#59c3c322',
+          iconBg: '#E6F5F5',
           title: 'Sound Alerts',
           subtitle: 'Vibrate when a new critical alert appears',
         },
@@ -379,7 +338,7 @@ export default function SettingsScreen({
           key: 'downloadData',
           type: 'action',
           icon: '⬇️',
-          iconBg: '#91afb022',
+          iconBg: '#EEF3F5',
           title: 'Download Data',
           subtitle: 'Share the latest reading as a CSV',
           badge: '📤',
@@ -484,14 +443,14 @@ export default function SettingsScreen({
                   value={farmNameDraft}
                   onChangeText={setFarmNameDraft}
                   placeholder="e.g. Pond one"
-                  placeholderTextColor="#4f6b6d"
+                  placeholderTextColor="#49656D"
                   style={styles.textInput}
                 />
               </View>
               {farmProfileError ? <Text style={styles.fieldErrorText}>{farmProfileError}</Text> : null}
             </View>
  
-            <Text style={styles.settingsRowSubtitle}>Farm ID: {farmId} (cannot be changed)</Text>
+            <Text style={styles.settingsRowSubtitle}>Google account: {accountEmail}</Text>
 
             <View style={styles.inputGroup}>
               <Text style={styles.inputLabel}>SMS PHONE NUMBER</Text>
@@ -500,7 +459,7 @@ export default function SettingsScreen({
                   value={phoneNumberDraft}
                   onChangeText={setPhoneNumberDraft}
                   placeholder="e.g. +639171234567"
-                  placeholderTextColor="#4f6b6d"
+                  placeholderTextColor="#49656D"
                   keyboardType="phone-pad"
                   style={styles.textInput}
                 />
@@ -536,7 +495,7 @@ export default function SettingsScreen({
                   value={exportDate}
                   onChangeText={setExportDate}
                   placeholder="YYYY-MM-DD"
-                  placeholderTextColor="#4f6b6d"
+                  placeholderTextColor="#49656D"
                   keyboardType="numbers-and-punctuation"
                   style={styles.textInput}
                 />
@@ -552,71 +511,6 @@ export default function SettingsScreen({
               </Pressable>
               <Pressable onPress={handleDownloadData} style={[styles.primaryButton, styles.modalButtonHalf]}>
                 <Text style={styles.primaryButtonText}>Export</Text>
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
- 
-      {/* Change Password modal */}
-      <Modal visible={activeModal === 'changePassword'} transparent animationType="fade" onRequestClose={closeModal}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <Text style={styles.authCardTitle}>Change Password</Text>
-            <Text style={styles.authCardSubtitle}>Enter your current password and choose a new one</Text>
- 
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>CURRENT PASSWORD</Text>
-              <View style={styles.inputRow}>
-                <TextInput
-                  value={currentPassword}
-                  onChangeText={setCurrentPassword}
-                  placeholder="Current password"
-                  placeholderTextColor="#4f6b6d"
-                  secureTextEntry
-                  style={styles.textInput}
-                />
-              </View>
-            </View>
- 
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>NEW PASSWORD</Text>
-              <View style={styles.inputRow}>
-                <TextInput
-                  value={newPassword}
-                  onChangeText={setNewPassword}
-                  placeholder="New password"
-                  placeholderTextColor="#4f6b6d"
-                  secureTextEntry
-                  style={styles.textInput}
-                />
-              </View>
-            </View>
- 
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>CONFIRM NEW PASSWORD</Text>
-              <View style={styles.inputRow}>
-                <TextInput
-                  value={confirmNewPassword}
-                  onChangeText={setConfirmNewPassword}
-                  placeholder="Confirm new password"
-                  placeholderTextColor="#4f6b6d"
-                  secureTextEntry
-                  style={styles.textInput}
-                />
-              </View>
-              {passwordError ? <Text style={styles.fieldErrorText}>{passwordError}</Text> : null}
-            </View>
- 
-            <View style={styles.modalButtonRow}>
-              <Pressable onPress={closeModal} style={[styles.secondaryButton, styles.modalButtonHalf]}>
-                <Text style={styles.secondaryButtonText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                onPress={handleSavePassword}
-                style={[styles.primaryButton, styles.modalButtonHalf]}
-              >
-                <Text style={styles.primaryButtonText}>Save</Text>
               </Pressable>
             </View>
           </View>

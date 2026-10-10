@@ -1,11 +1,13 @@
 import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
-import { limitToLast, onValue, orderByChild, push, query, ref, runTransaction, set, update } from 'firebase/database';
+import { GoogleSignin } from '@react-native-google-signin/google-signin';
+import { GoogleAuthProvider, signInWithCredential, signOut } from 'firebase/auth';
+import { get, limitToLast, onValue, orderByChild, push, query, ref, runTransaction, set, update } from 'firebase/database';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Platform, SafeAreaView, Vibration, View } from 'react-native';
 
 import TabBar from './components/TabBar';
-import { db as database } from './firebaseConfig';
+import { auth, db as database, GOOGLE_WEB_CLIENT_ID } from './firebaseConfig';
 import { demoReading, formatValue, metrics } from './metrics';
 import AlertScreen from './screens/AlertScreen';
 import DashboardScreen from './screens/DashboardScreen';
@@ -57,17 +59,7 @@ const DEFAULT_PREFERENCES: NotificationPreferences = {
   soundAlerts: true,
 };
 
-// Seeded demo account. Only written to Firebase if the accounts path is
-// still empty, so it won't overwrite real data on every app start.
-const SEED_ACCOUNTS: Record<string, StoredAccount> = {
-  pond_farm_01: {
-    email: 'demo@isdaapp.io',
-    password: 'password123',
-    pin: '1234',
-    farmName: 'Pond one',
-    preferences: DEFAULT_PREFERENCES,
-  },
-};
+GoogleSignin.configure({ webClientId: GOOGLE_WEB_CLIENT_ID });
 
 export default function App() {
   const [reading, setReading] = useState<PondReading>(demoReading);
@@ -77,7 +69,7 @@ export default function App() {
   const [alertDetectedAt, setAlertDetectedAt] = useState<Partial<Record<MetricKey, Date>>>({});
   const [farmId, setFarmId] = useState<string | null>(null);
   const [authScreen, setAuthScreen] = useState<AuthScreen>('login');
-  const [accounts, setAccounts] = useState<Record<string, StoredAccount>>(SEED_ACCOUNTS);
+  const [currentAccount, setCurrentAccount] = useState<StoredAccount | null>(null);
   const [preferences, setPreferences] = useState<NotificationPreferences>(DEFAULT_PREFERENCES);
   const [clearedAlertsAt, setClearedAlertsAt] = useState<number | null>(null);
   const [historyLogs, setHistoryLogs] = useState<SensorLog[]>([]);
@@ -85,137 +77,131 @@ export default function App() {
   const [pushPermissionGranted, setPushPermissionGranted] = useState(false);
 
   const isAuthenticated = farmId !== null;
-  const currentAccount = farmId ? accounts[farmId] : null;
 
-  // Load every registered account from Firebase. If the database is empty
-  // (first run), seed it with the demo account so sign-in still works.
+  // Each account is stored under its Firebase Auth UID, so account reads stay
+  // scoped to the Google account that authenticated.
   useEffect(() => {
-    const accountsRef = ref(database, ACCOUNTS_PATH);
-    const unsubscribe = onValue(accountsRef, (snapshot) => {
-      const data = snapshot.val() as Record<string, StoredAccount> | null;
-      if (data) {
-        setAccounts(data);
-      } else {
-        void runTransaction(accountsRef, (current) => current ?? SEED_ACCOUNTS)
-          .then(({ snapshot }) => {
-            setAccounts((snapshot.val() as Record<string, StoredAccount> | null) ?? SEED_ACCOUNTS);
-          })
-          .catch(() => undefined);
-      }
-    });
+    if (!farmId) {
+      setCurrentAccount(null);
+      return;
+    }
+    const unsubscribe = onValue(
+      ref(database, `${ACCOUNTS_PATH}/${farmId}`),
+      (snapshot) => setCurrentAccount(snapshot.val() as StoredAccount | null),
+      () => Alert.alert('Account unavailable', 'Could not load account settings. Check your connection and database rules.'),
+    );
     return unsubscribe;
-  }, []);
+  }, [farmId]);
 
-  // Whenever the signed-in farm's account record changes (including right
-  // after login), sync local preferences state from what's stored.
+  // Sync local preferences whenever this account record changes.
   useEffect(() => {
-    if (!farmId) return;
-    setPreferences({ ...DEFAULT_PREFERENCES, ...accounts[farmId]?.preferences });
-    setClearedAlertsAt(accounts[farmId]?.clearedAlertsAt ?? null);
-  }, [farmId, accounts]);
+    setPreferences({ ...DEFAULT_PREFERENCES, ...currentAccount?.preferences });
+    setClearedAlertsAt(currentAccount?.clearedAlertsAt ?? null);
+  }, [currentAccount]);
 
-  const handleSignIn = async (id: string, password: string, pin: string): Promise<AuthResult> => {
-    const normalizedId = id.trim().toLowerCase();
-    const accountEntry = Object.entries(accounts).find(([key]) => key.toLowerCase() === normalizedId);
-    if (!accountEntry) return { success: false, error: 'Incorrect farm ID, password, or PIN.' };
-    const [accountId, account] = accountEntry;
-    if (!account || account.password !== password) {
-      return { success: false, error: 'Incorrect farm ID, password, or PIN.' };
+  const authenticateWithGoogle = async () => {
+    await GoogleSignin.signOut();
+    const response = await GoogleSignin.signIn();
+    if (response.type === 'cancelled') {
+      throw new Error('Google sign-in was cancelled.');
     }
-    if (account.pin && account.pin !== pin) {
-      return { success: false, error: 'Incorrect farm ID, password, or PIN.' };
+    if (!response.data.idToken) {
+      throw new Error('Google did not return an ID token. Check the Google sign-in configuration.');
     }
-    if (!account.pin) {
-      const accountRef = ref(database, `${ACCOUNTS_PATH}/${accountId}`);
-      const result = await runTransaction(accountRef, (current) => {
-        if (!current || current.password !== password) return;
-        if (typeof current.pin === 'string') return current;
-        return { ...current, pin };
-      });
+    const credential = GoogleAuthProvider.credential(response.data.idToken);
+    const { user } = await signInWithCredential(auth, credential);
+    if (!user.email) {
+      throw new Error('The selected Google account does not have an email address.');
+    }
+    if (!user.emailVerified) {
+      throw new Error('Verify this email address with Google before continuing.');
+    }
+    return user;
+  };
+
+  const handleSignUp = async (onStepChange: (step: number) => void): Promise<AuthResult> => {
+    try {
+      const user = await authenticateWithGoogle();
+      onStepChange(1);
+      const email = user.email?.trim().toLowerCase();
+      if (!email) {
+        return { success: false, error: 'The selected Google account does not have an email address.' };
+      }
+      const account: StoredAccount = {
+        authUid: user.uid,
+        email,
+        farmName: 'Pond one',
+        preferences: DEFAULT_PREFERENCES,
+      };
+      const accountRef = ref(database, `${ACCOUNTS_PATH}/${user.uid}`);
+      const result = await runTransaction(accountRef, (current) => current ? undefined : account);
       const storedAccount = result.snapshot.val() as StoredAccount | null;
-      if (!storedAccount || storedAccount.pin !== pin) {
-        return { success: false, error: 'PIN setup failed. Check your connection and try again.' };
+      if (!result.committed || !storedAccount) {
+        return { success: false, error: 'This Google account already has an app account. Sign in instead.' };
       }
-      setAccounts((previous) => ({ ...previous, [accountId]: storedAccount }));
+      setCurrentAccount(storedAccount);
+      setFarmId(user.uid);
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Google sign-up failed. Please try again.',
+      };
     }
-    setFarmId(accountId);
-    return { success: true };
   };
 
-  const handleSignUp = async (id: string, email: string, password: string, pin: string): Promise<AuthResult> => {
-    const normalizedId = id.trim().toLowerCase();
-    const normalizedEmail = email.trim().toLowerCase();
-    if (!/^[a-z0-9_-]{3,32}$/.test(normalizedId)) {
-      return { success: false, error: 'Farm ID must be 3-32 characters using letters, numbers, _ or -.' };
-    }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
-      return { success: false, error: 'Enter a valid email address.' };
-    }
-    if (!/^\d{4}$/.test(pin)) {
-      return { success: false, error: 'PIN must contain exactly 4 digits.' };
-    }
-    const newAccount: StoredAccount = {
-      email: normalizedEmail,
-      password,
-      pin,
-      farmName: 'Pond one',
-      preferences: DEFAULT_PREFERENCES,
-    };
-
-    let duplicate: 'farm ID' | 'email' | null = null;
-    const accountsRef = ref(database, ACCOUNTS_PATH);
-    const result = await runTransaction(accountsRef, (current) => {
-      const registry = (current as Record<string, StoredAccount> | null) ?? SEED_ACCOUNTS;
-      duplicate = null;
-      for (const [existingId, existingAccount] of Object.entries(registry)) {
-        if (existingId.toLowerCase() === normalizedId) {
-          duplicate = 'farm ID';
-          return;
-        }
-        if (existingAccount.email?.trim().toLowerCase() === normalizedEmail) {
-          duplicate = 'email';
-          return;
-        }
+  const handleSignIn = async (): Promise<AuthResult> => {
+    try {
+      const user = await authenticateWithGoogle();
+      const accountRef = ref(database, `${ACCOUNTS_PATH}/${user.uid}`);
+      const accountSnapshot = await get(accountRef);
+      const account = accountSnapshot.val() as (StoredAccount & { pin?: string | null }) | null;
+      if (!account) {
+        return { success: false, error: 'No account is registered for this Google account. Please sign up first.' };
       }
-      return { ...registry, [normalizedId]: newAccount };
-    });
 
-    if (!result.committed) {
-      return { success: false, error: duplicate ? `That ${duplicate} is already registered.` : 'Account creation was cancelled. Please try again.' };
+      if (Object.prototype.hasOwnProperty.call(account, 'pin')) {
+        await update(accountRef, { pin: null });
+      }
+
+      const accountWithoutPin = { ...account };
+      delete accountWithoutPin.pin;
+      setCurrentAccount(accountWithoutPin);
+      setFarmId(user.uid);
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Google sign-in failed. Please try again.',
+      };
     }
-    setAccounts((result.snapshot.val() as Record<string, StoredAccount> | null) ?? {});
-    setFarmId(normalizedId);
-    return { success: true };
   };
 
-  const handleLogout = () => {
-    setFarmId(null);
-    setAuthScreen('login');
-    setActiveTab('dashboard');
-  };
-
-  const handleChangePassword = (currentPassword: string, newPassword: string): AuthResult => {
-    if (!farmId) return { success: false, error: 'You are not signed in.' };
-    const account = accounts[farmId];
-    if (account.password !== currentPassword) {
-      return { success: false, error: 'Current password is incorrect.' };
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      await GoogleSignin.signOut();
+      setCurrentAccount(null);
+      setFarmId(null);
+      setAuthScreen('login');
+      setActiveTab('dashboard');
+    } catch {
+      Alert.alert('Sign out failed', 'Could not sign out of Google right now. Check your connection and try again.');
     }
-    setAccounts((prev) => ({ ...prev, [farmId]: { ...prev[farmId], password: newPassword } }));
-    update(ref(database, `${ACCOUNTS_PATH}/${farmId}`), { password: newPassword });
-    return { success: true };
   };
 
-  const handleUpdateFarmProfile = (newName: string, phoneNumber: string): AuthResult => {
+  const handleUpdateFarmProfile = async (newName: string, phoneNumber: string): Promise<AuthResult> => {
     if (!farmId) return { success: false, error: 'You are not signed in.' };
     const trimmed = newName.trim();
     if (!trimmed) return { success: false, error: 'Farm name cannot be empty.' };
     const normalizedPhone = phoneNumber.trim();
-    setAccounts((prev) => ({
-      ...prev,
-      [farmId]: { ...prev[farmId], farmName: trimmed, phoneNumber: normalizedPhone },
-    }));
-    update(ref(database, `${ACCOUNTS_PATH}/${farmId}`), { farmName: trimmed, phoneNumber: normalizedPhone });
-    return { success: true };
+    try {
+      await update(ref(database, `${ACCOUNTS_PATH}/${farmId}`), { farmName: trimmed, phoneNumber: normalizedPhone });
+      setCurrentAccount((previous) => previous ? { ...previous, farmName: trimmed, phoneNumber: normalizedPhone } : previous);
+      return { success: true };
+    } catch {
+      return { success: false, error: 'Could not save your farm profile. Check your connection and database rules.' };
+    }
   };
 
   const handleClearAllAlerts = () => {
@@ -225,14 +211,16 @@ export default function App() {
     update(ref(database, `${ACCOUNTS_PATH}/${farmId}`), { clearedAlertsAt: timestamp });
   };
 
-  const togglePreference = (key: keyof NotificationPreferences) => {
-    setPreferences((prev) => {
-      const next = { ...prev, [key]: !prev[key] };
-      if (farmId) {
-        update(ref(database, `${ACCOUNTS_PATH}/${farmId}/preferences`), next);
-      }
-      return next;
-    });
+  const togglePreference = async (key: keyof NotificationPreferences) => {
+    if (!farmId) return;
+    const next = { ...preferences, [key]: !preferences[key] };
+    try {
+      await update(ref(database, `${ACCOUNTS_PATH}/${farmId}/preferences`), next);
+      setPreferences(next);
+      setCurrentAccount((account) => account ? { ...account, preferences: next } : account);
+    } catch {
+      Alert.alert('Could not save setting', 'Check your connection and database rules, then try again.');
+    }
   };
 
   useEffect(() => {
@@ -401,16 +389,25 @@ export default function App() {
   }, [activeAlerts, preferences.soundAlerts]);
 
   if (!isAuthenticated) {
-    return authScreen === 'login' ? (
-      <LoginScreen onSignIn={handleSignIn} onNavigateSignUp={() => setAuthScreen('signup')} />
-    ) : (
-      <SignupScreen onSignUp={handleSignUp} onNavigateSignIn={() => setAuthScreen('login')} />
+    if (authScreen === 'signup') {
+      return (
+        <SignupScreen
+          onSignUp={handleSignUp}
+          onNavigateSignIn={() => setAuthScreen('login')}
+        />
+      );
+    }
+    return (
+      <LoginScreen
+        onSignIn={handleSignIn}
+        onNavigateSignUp={() => setAuthScreen('signup')}
+      />
     );
   }
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <StatusBar style="light" />
+      <StatusBar style="dark" />
 
       <View style={styles.screenContainer}>
         {activeTab === 'dashboard' && (
@@ -435,15 +432,14 @@ export default function App() {
         {activeTab === 'history' && <HistoryScreen logs={historyLogs} isLoading={historyLoading} />}
         {activeTab === 'settings' && (
           <SettingsScreen
-            farmId={farmId}
             farmName={currentAccount?.farmName ?? 'Pond one'}
+            accountEmail={currentAccount?.email ?? ''}
             phoneNumber={currentAccount?.phoneNumber ?? ''}
             reading={reading}
             lastUpdated={lastUpdated}
             historyLogs={historyLogs}
             preferences={preferences}
             onTogglePreference={togglePreference}
-            onChangePassword={handleChangePassword}
             onUpdateFarmProfile={handleUpdateFarmProfile}
             onLogout={handleLogout}
           />
