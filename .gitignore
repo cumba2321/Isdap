@@ -1,0 +1,12 @@
+node_modules/
+.expo/
+dist/
+web-build/
+android/.gradle/
+android/build/
+android/app/build/
+ios/Pods/
+google-services.json
+.env
+.env.*
+firmware/**/Secrets.h
