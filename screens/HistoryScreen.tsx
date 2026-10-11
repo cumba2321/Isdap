@@ -1,4 +1,4 @@
-import { ScrollView, Text, View } from 'react-native';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { formatValue, metrics } from '../metrics';
 import { styles } from '../styles';
 import { SensorLog } from '../types';
@@ -31,15 +31,18 @@ export default function HistoryScreen({ logs, isLoading }: HistoryScreenProps) {
         </View>
       </View>
 
-      {isLoading && <Text style={styles.historyStatus}>Loading sensor history...</Text>}
+      {isLoading && <Text style={styles.historyStatus}>Loading history…</Text>}
 
       {!isLoading && logs.length === 0 && (
-        <View style={styles.emptyState}>
-          <View style={styles.emptyBadge}>
-            <Text style={styles.emptyBadgeText}>HIST</Text>
+        <View style={screenStyles.emptyCard}>
+          <View style={screenStyles.emptyIcon}>
+            <Text style={screenStyles.emptyIconText}>↻</Text>
           </View>
-          <Text style={styles.emptyTitle}>No readings recorded yet</Text>
-          <Text style={styles.emptyCopy}>New sensor readings will appear here automatically.</Text>
+          <Text style={screenStyles.emptyEyebrow}>READING ARCHIVE</Text>
+          <Text style={screenStyles.emptyTitle}>Your history starts here</Text>
+          <Text style={screenStyles.emptyCopy}>
+            Sensor readings will be saved here as they come in.
+          </Text>
         </View>
       )}
 
@@ -64,3 +67,30 @@ export default function HistoryScreen({ logs, isLoading }: HistoryScreenProps) {
     </ScrollView>
   );
 }
+
+const screenStyles = StyleSheet.create({
+  emptyCard: {
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderColor: '#E3ECEE',
+    borderRadius: 22,
+    borderWidth: 1,
+    marginTop: 8,
+    paddingHorizontal: 28,
+    paddingVertical: 30,
+  },
+  emptyIcon: {
+    alignItems: 'center',
+    backgroundColor: '#E8F5F2',
+    borderColor: '#D8EBE7',
+    borderRadius: 30,
+    borderWidth: 1,
+    height: 58,
+    justifyContent: 'center',
+    width: 58,
+  },
+  emptyIconText: { color: '#087C73', fontSize: 29, fontWeight: '500', lineHeight: 34 },
+  emptyEyebrow: { color: '#71868C', fontSize: 9, fontWeight: '800', letterSpacing: 1.4, marginTop: 18 },
+  emptyTitle: { color: '#1D343B', fontSize: 17, fontWeight: '800', marginTop: 7, textAlign: 'center' },
+  emptyCopy: { color: '#71868C', fontSize: 12, lineHeight: 18, marginTop: 6, maxWidth: 250, textAlign: 'center' },
+});

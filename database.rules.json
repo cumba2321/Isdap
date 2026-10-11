@@ -1,0 +1,67 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "IsdaApp": {
+      "accounts": {
+        "$uid": {
+          ".read": "auth != null && auth.uid === $uid",
+          ".write": "auth != null && auth.uid === $uid"
+        }
+      }
+    },
+    "deviceSecrets": {
+      "$deviceId": {
+        ".read": false,
+        ".write": false
+      }
+    },
+    "deviceConfig": {
+      "$deviceId": {
+        ".read": "auth != null && data.child('authUid').val() === auth.uid",
+        ".write": false,
+        "alertNumber": {
+          ".write": "auth != null && root.child('deviceClaims').child($deviceId).child('ownerUid').val() === auth.uid",
+          ".validate": "newData.isString() && newData.val().length <= 20"
+        },
+        "smsEnabled": {
+          ".write": "auth != null && root.child('deviceClaims').child($deviceId).child('ownerUid').val() === auth.uid",
+          ".validate": "newData.isBoolean()"
+        },
+        "smsCritical": {
+          ".write": "auth != null && root.child('deviceClaims').child($deviceId).child('ownerUid').val() === auth.uid",
+          ".validate": "newData.isBoolean()"
+        },
+        "smsWarning": {
+          ".write": "auth != null && root.child('deviceClaims').child($deviceId).child('ownerUid').val() === auth.uid",
+          ".validate": "newData.isBoolean()"
+        }
+      }
+    },
+    "deviceClaims": {
+      "$deviceId": {
+        ".read": "auth != null && (!data.child('ownerUid').exists() || data.child('ownerUid').val() === auth.uid)",
+        ".write": "auth != null && ((!data.exists() && newData.child('ownerUid').val() === auth.uid && newData.child('claimCode').val() === root.child('deviceSecrets').child($deviceId).child('claimCode').val()) || (data.child('ownerUid').val() === auth.uid && !newData.exists()))",
+        ".validate": "newData.hasChildren(['ownerUid', 'claimCode'])",
+        "ownerUid": {
+          ".validate": "newData.isString()"
+        },
+        "claimCode": {
+          ".validate": "newData.isString()"
+        }
+      }
+    },
+    "devices": {
+      "$deviceId": {
+        "live_data": {
+          ".read": "auth != null && root.child('deviceClaims').child($deviceId).child('ownerUid').val() === auth.uid",
+          ".write": "auth != null && root.child('deviceConfig').child($deviceId).child('authUid').val() === auth.uid"
+        },
+        "sensor_history": {
+          ".read": "auth != null && root.child('deviceClaims').child($deviceId).child('ownerUid').val() === auth.uid",
+          ".write": "auth != null && root.child('deviceClaims').child($deviceId).child('ownerUid').val() === auth.uid"
+        }
+      }
+    }
+  }
+}

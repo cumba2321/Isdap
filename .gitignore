@@ -1,20 +1,4 @@
-<<<<<<< HEAD
-node_modules/
-.expo/
-dist/
-web-build/
-android/.gradle/
-android/build/
-android/app/build/
-ios/Pods/
-google-services.json
-.env
-.env.*
-firmware/**/Secrets.h
-=======
-# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
-
-# dependencies
+# Dependencies
 node_modules/
 
 # Expo
@@ -23,7 +7,7 @@ dist/
 web-build/
 expo-env.d.ts
 
-# Native
+# Native build artifacts
 .kotlin/
 *.orig.*
 *.jks
@@ -31,26 +15,30 @@ expo-env.d.ts
 *.p12
 *.key
 *.mobileprovision
+android/.gradle/
+android/build/
+android/app/build/
+ios/
+ios/Pods/
 
 # Metro
 .metro-health-check*
 
-# debug
+# Debug logs
 npm-debug.*
 yarn-debug.*
 yarn-error.*
 
-# macOS
+# OS files
 .DS_Store
 *.pem
 
-# local env files
-.env*.local
+# Local environment files
+.env
+.env.*
 
-# typescript
+# TypeScript
 *.tsbuildinfo
 
-# generated native folders
-/ios
-/android
->>>>>>> origin/main
+# Device secrets
+firmware/**/Secrets.h

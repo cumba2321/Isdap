@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import {
@@ -6,6 +6,7 @@ import {
   Modal,
   Pressable,
   ScrollView,
+  StyleSheet,
   Switch,
   Text,
   TextInput,
@@ -13,20 +14,28 @@ import {
 } from 'react-native';
 import { formatValue, metrics } from '../metrics';
 import { styles } from '../styles';
-import { AuthResult, NotificationPreferences, PondReading, SensorLog } from '../types';
+import { AuthResult, ManagedDevice, NotificationPreferences, PondReading, SensorLog } from '../types';
 import * as XLSX from 'xlsx';
  
 type SettingsScreenProps = {
   farmName: string;
+  devices: ManagedDevice[];
+  selectedDeviceId: string | null;
   accountEmail: string;
   phoneNumber: string;
   reading: PondReading;
   lastUpdated: Date;
   historyLogs: SensorLog[];
   preferences: NotificationPreferences;
+  focusSmsSettings: boolean;
   onTogglePreference: (key: keyof NotificationPreferences) => void;
+  onSmsSettingsFocused: () => void;
   onUpdateFarmProfile: (newName: string, phoneNumber: string) => Promise<AuthResult>;
+  onClaimDevice: (deviceId: string, claimCode: string, name: string) => Promise<AuthResult>;
+  onSelectDevice: (deviceId: string) => Promise<AuthResult>;
+  onUnlinkDevice: (deviceId: string) => Promise<AuthResult>;
   onLogout: () => void;
+  onDeleteAccount: () => Promise<AuthResult>;
 };
  
 type RowBase = {
@@ -40,16 +49,12 @@ type RowBase = {
 type LinkRow = RowBase & { type: 'link'; onPress: () => void };
 type ToggleRow = RowBase & { type: 'toggle'; toggleKey: keyof NotificationPreferences; disabled?: boolean };
 type ActionRow = RowBase & { type: 'action'; onPress: () => void; badge: string };
+type DestructiveRow = RowBase & { type: 'destructive'; onPress: () => void };
+
+type Row = LinkRow | ToggleRow | ActionRow | DestructiveRow;
  
-type Row = LinkRow | ToggleRow | ActionRow;
- 
-<<<<<<< HEAD
-const SWITCH_TRACK_COLOR = { false: '#2b444b', true: '#59c3c377' };
-const SWITCH_THUMB_COLOR = { off: '#7fa7aa', on: '#59c3c3' };
-=======
 const SWITCH_TRACK_COLOR = { false: '#CAD9DE', true: '#84C8CC' };
 const SWITCH_THUMB_COLOR = { off: '#60777E', on: '#078A95' };
->>>>>>> origin/main
 
 const thresholdReference = [
   {
@@ -110,21 +115,45 @@ const thresholdReference = [
  
 export default function SettingsScreen({
   farmName,
+  devices,
+  selectedDeviceId,
   accountEmail,
   phoneNumber,
   reading,
   lastUpdated,
   historyLogs,
   preferences,
+  focusSmsSettings,
   onTogglePreference,
+  onSmsSettingsFocused,
   onUpdateFarmProfile,
+  onClaimDevice,
+  onSelectDevice,
+  onUnlinkDevice,
   onLogout,
+  onDeleteAccount,
 }: SettingsScreenProps) {
+  const scrollViewRef = useRef<ScrollView>(null);
   const [activeModal, setActiveModal] = useState<'farmProfile' | 'downloadData' | null>(null);
+  const [qrScannerVisible, setQrScannerVisible] = useState(false);
+  const [QrCameraView, setQrCameraView] = useState<typeof import('expo-camera').CameraView | null>(null);
+  const [deletingAccount, setDeletingAccount] = useState(false);
+  const [deviceIdDraft, setDeviceIdDraft] = useState('');
+  const [deviceClaimCodeDraft, setDeviceClaimCodeDraft] = useState('');
+  const [deviceNameDraft, setDeviceNameDraft] = useState('');
+  const [deviceError, setDeviceError] = useState<string | null>(null);
+  const [deviceBusy, setDeviceBusy] = useState<string | null>(null);
  
   const [farmNameDraft, setFarmNameDraft] = useState(farmName);
   const [phoneNumberDraft, setPhoneNumberDraft] = useState(phoneNumber);
   const [farmProfileError, setFarmProfileError] = useState<string | null>(null);
+  const [smsNumberError, setSmsNumberError] = useState<string | null>(null);
+  const [smsNumberSaving, setSmsNumberSaving] = useState(false);
+  const [smsNumberSaved, setSmsNumberSaved] = useState(false);
+
+  useEffect(() => {
+    setPhoneNumberDraft(phoneNumber);
+  }, [phoneNumber]);
  
   const [exportDate, setExportDate] = useState(() => {
     const now = new Date();
@@ -150,6 +179,127 @@ export default function SettingsScreen({
       return;
     }
     closeModal();
+  };
+
+  const handleSaveSmsNumber = async () => {
+    setSmsNumberSaving(true);
+    setSmsNumberError(null);
+    setSmsNumberSaved(false);
+    try {
+      const result = await onUpdateFarmProfile(farmName, phoneNumberDraft);
+      if (!result.success) setSmsNumberError(result.error);
+      else setSmsNumberSaved(true);
+    } finally {
+      setSmsNumberSaving(false);
+    }
+  };
+
+  const handleClaimDevice = async () => {
+    setDeviceBusy('claim');
+    setDeviceError(null);
+    try {
+      let deviceId = deviceIdDraft.trim();
+      let claimCode = deviceClaimCodeDraft;
+      const qrPrefix = /^ISDAAPP:/i;
+      if (qrPrefix.test(deviceId)) {
+        const payload = deviceId.replace(qrPrefix, '');
+        const separator = payload.indexOf(':');
+        if (separator >= 0) {
+          deviceId = payload.slice(0, separator);
+          claimCode = payload.slice(separator + 1);
+        }
+      }
+      const result = await onClaimDevice(deviceId, claimCode, deviceNameDraft);
+      if (!result.success) {
+        setDeviceError(result.error);
+        return;
+      }
+      setDeviceIdDraft('');
+      setDeviceClaimCodeDraft('');
+      setDeviceNameDraft('');
+    } catch {
+      setDeviceError('Could not link this device. Check your connection and try again.');
+    } finally {
+      setDeviceBusy(null);
+    }
+  };
+
+  const openQrScanner = async () => {
+    try {
+      const camera = await import('expo-camera');
+      let permission = await camera.Camera.getCameraPermissionsAsync();
+      if (!permission.granted) {
+        permission = await camera.Camera.requestCameraPermissionsAsync();
+      }
+      if (!permission.granted) {
+        setDeviceError('Camera access is needed to scan a device QR code.');
+        return;
+      }
+      setQrCameraView(() => camera.CameraView);
+      setDeviceError(null);
+      setQrScannerVisible(true);
+    } catch {
+      Alert.alert(
+        'Update required',
+        'QR scanning needs the latest IsdaApp version. Rebuild and reinstall the app, then try again.',
+      );
+    }
+  };
+
+  const handleQrScanned = ({ data }: { data: string }) => {
+    if (!qrScannerVisible) return;
+    const match = /^ISDAAPP:([^:]+):([\s\S]+)$/i.exec(data.trim());
+    if (!match) {
+      setQrScannerVisible(false);
+      setDeviceError('This QR code is not a valid IsdaApp device code.');
+      return;
+    }
+
+    setDeviceIdDraft(match[1]);
+    setDeviceClaimCodeDraft(match[2]);
+    setDeviceError(null);
+    setQrScannerVisible(false);
+  };
+
+  const confirmUnlinkDevice = (device: ManagedDevice) => {
+    Alert.alert(
+      'Unlink device?',
+      `${device.name} will stop appearing in your account and become available for another user to claim. The sensor itself will keep uploading.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Unlink',
+          style: 'destructive',
+          onPress: async () => {
+            setDeviceBusy(device.deviceId);
+            setDeviceError(null);
+            const result = await onUnlinkDevice(device.deviceId);
+            if (!result.success) setDeviceError(result.error);
+            setDeviceBusy(null);
+          },
+        },
+      ],
+    );
+  };
+
+  const confirmDeleteAccount = () => {
+    Alert.alert(
+      'Delete account permanently?',
+      'This removes your IsdaApp account, unlinks all ponds, and clears their SMS alert settings. Sensor readings remain in the database, and the sensors will keep uploading.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete account',
+          style: 'destructive',
+          onPress: async () => {
+            setDeletingAccount(true);
+            const result = await onDeleteAccount();
+            setDeletingAccount(false);
+            if (!result.success) Alert.alert('Account not deleted', result.error);
+          },
+        },
+      ],
+    );
   };
  
   const handleDownloadData = async () => {
@@ -248,11 +398,7 @@ export default function SettingsScreen({
           key: 'farmProfile',
           type: 'link',
           icon: '🌾',
-<<<<<<< HEAD
-          iconBg: '#e8c56a22',
-=======
           iconBg: '#FFF3D5',
->>>>>>> origin/main
           title: 'Farm Profile',
           subtitle: accountEmail ? `${farmName} · ${accountEmail}` : farmName,
           onPress: openFarmProfile,
@@ -268,11 +414,7 @@ export default function SettingsScreen({
           type: 'toggle',
           toggleKey: 'pushNotifications',
           icon: '📲',
-<<<<<<< HEAD
-          iconBg: '#59c3c322',
-=======
           iconBg: '#E6F5F5',
->>>>>>> origin/main
           title: 'Push Notifications',
           subtitle: 'Notify me for every warning or critical reading',
         },
@@ -281,37 +423,25 @@ export default function SettingsScreen({
           type: 'toggle',
           toggleKey: 'alertNotifications',
           icon: '🚨',
-<<<<<<< HEAD
-          iconBg: '#ef7d8822',
-=======
           iconBg: '#FCE8EA',
->>>>>>> origin/main
-          title: 'Alert Notifications',
-          subtitle: 'Show critical alerts on the Alerts tab',
+          title: 'Critical Alerts',
+          subtitle: 'Show and notify for critical readings',
         },
         {
           key: 'warningNotifications',
           type: 'toggle',
           toggleKey: 'warningNotifications',
           icon: '⚠️',
-<<<<<<< HEAD
-          iconBg: '#e8c56a22',
-=======
           iconBg: '#FFF3D5',
->>>>>>> origin/main
-          title: 'Warning Notifications',
-          subtitle: 'Show warning alerts on the Alerts tab',
+          title: 'Warning Alerts',
+          subtitle: 'Show and notify for warning readings',
         },
         {
           key: 'smsNotifications',
           type: 'toggle',
           toggleKey: 'smsNotifications',
           icon: 'SMS',
-<<<<<<< HEAD
-          iconBg: '#59c3c322',
-=======
           iconBg: '#E6F5F5',
->>>>>>> origin/main
           title: 'SMS Notifications',
           subtitle: preferences.smsNotifications ? 'SMS alerts are enabled' : 'SMS alerts are disabled',
         },
@@ -321,11 +451,7 @@ export default function SettingsScreen({
           toggleKey: 'smsCritical',
           disabled: !preferences.smsNotifications,
           icon: '🚨',
-<<<<<<< HEAD
-          iconBg: '#ef7d8822',
-=======
           iconBg: '#FCE8EA',
->>>>>>> origin/main
           title: 'SMS Critical Alerts',
           subtitle: 'Send an SMS for critical sensor readings',
         },
@@ -335,11 +461,7 @@ export default function SettingsScreen({
           toggleKey: 'smsWarning',
           disabled: !preferences.smsNotifications,
           icon: '⚠️',
-<<<<<<< HEAD
-          iconBg: '#e8c56a22',
-=======
           iconBg: '#FFF3D5',
->>>>>>> origin/main
           title: 'SMS Warning Alerts',
           subtitle: 'Send an SMS for warning sensor readings',
         },
@@ -354,11 +476,7 @@ export default function SettingsScreen({
           type: 'toggle',
           toggleKey: 'autoRefresh',
           icon: '🔄',
-<<<<<<< HEAD
-          iconBg: '#59c3c322',
-=======
           iconBg: '#E6F5F5',
->>>>>>> origin/main
           title: 'Auto Refresh',
           subtitle: preferences.autoRefresh ? 'Live sensor updates are on' : 'Paused — showing last known reading',
         },
@@ -367,11 +485,7 @@ export default function SettingsScreen({
           type: 'toggle',
           toggleKey: 'soundAlerts',
           icon: '🔊',
-<<<<<<< HEAD
-          iconBg: '#59c3c322',
-=======
           iconBg: '#E6F5F5',
->>>>>>> origin/main
           title: 'Sound Alerts',
           subtitle: 'Vibrate when a new critical alert appears',
         },
@@ -379,11 +493,7 @@ export default function SettingsScreen({
           key: 'downloadData',
           type: 'action',
           icon: '⬇️',
-<<<<<<< HEAD
-          iconBg: '#91afb022',
-=======
           iconBg: '#EEF3F5',
->>>>>>> origin/main
           title: 'Download Data',
           subtitle: 'Share the latest reading as a CSV',
           badge: '📤',
@@ -391,33 +501,198 @@ export default function SettingsScreen({
         },
       ],
     },
+    {
+      title: 'ADVANCED SETTINGS',
+      icon: '⚠️',
+      rows: [
+        {
+          key: 'deleteAccount',
+          type: 'destructive',
+          icon: '❌',
+          iconBg: '#FCE8EA',
+          title: deletingAccount ? 'Deleting account…' : 'Delete account',
+          subtitle: 'Permanently remove your account and unlink all ponds',
+          onPress: confirmDeleteAccount,
+        },
+      ],
+    },
   ];
  
   return (
-    <ScrollView contentContainerStyle={styles.content}>
+    <ScrollView ref={scrollViewRef} contentContainerStyle={styles.content}>
       <View style={styles.header}>
         <View>
           <Text style={styles.title}>Settings</Text>
           <Text style={styles.screenSubtitle}>Manage your preferences</Text>
         </View>
       </View>
+
+      <View style={screenStyles.deviceSection}>
+        <Text style={styles.sectionTitle}>My devices</Text>
+        <Text style={screenStyles.deviceIntro}>
+          Sensors connected to your ponds.
+        </Text>
+
+        {devices.length === 0 ? (
+          <View style={screenStyles.deviceEmpty}>
+            <Text style={screenStyles.deviceEmptyTitle}>No devices linked</Text>
+            <Text style={screenStyles.deviceEmptyCopy}>
+              Live pond readings will appear here after setup.
+            </Text>
+          </View>
+        ) : devices.map((device) => {
+          const isSelected = device.deviceId === selectedDeviceId;
+          return (
+            <View key={device.deviceId} style={screenStyles.deviceCard}>
+              <View style={screenStyles.deviceInfo}>
+                <Text style={screenStyles.deviceName}>{device.name}</Text>
+                <Text style={screenStyles.deviceId}>{device.deviceId}</Text>
+                {isSelected ? <Text style={screenStyles.deviceSelected}>CURRENT SENSOR</Text> : null}
+              </View>
+              {!isSelected ? (
+                <Pressable
+                  onPress={async () => {
+                    setDeviceBusy(device.deviceId);
+                    setDeviceError(null);
+                    const result = await onSelectDevice(device.deviceId);
+                    if (!result.success) setDeviceError(result.error);
+                    setDeviceBusy(null);
+                  }}
+                  disabled={deviceBusy !== null}
+                  style={screenStyles.deviceSmallButton}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Select ${device.name}`}
+                >
+                  <Text style={screenStyles.deviceSmallButtonText}>
+                    {deviceBusy === device.deviceId ? '…' : 'Select'}
+                  </Text>
+                </Pressable>
+              ) : null}
+              <Pressable
+                onPress={() => confirmUnlinkDevice(device)}
+                disabled={deviceBusy !== null}
+                style={screenStyles.deviceUnlinkButton}
+                accessibilityRole="button"
+                accessibilityLabel={`Unlink ${device.name}`}
+              >
+                <Text style={screenStyles.deviceUnlinkText}>Unlink</Text>
+              </Pressable>
+            </View>
+          );
+        })}
+
+        <View style={screenStyles.deviceForm}>
+          <Text style={screenStyles.deviceFormTitle}>Link a device</Text>
+          <Text style={screenStyles.deviceFormSubtitle}>Enter the device ID and private claim code.</Text>
+          <Pressable
+            onPress={openQrScanner}
+            style={({ pressed }) => [screenStyles.qrScanButton, pressed && styles.tabButtonPressed]}
+            accessibilityRole="button"
+          >
+            <Text style={screenStyles.qrScanButtonIcon}>▦</Text>
+            <Text style={screenStyles.qrScanButtonText}>Scan device QR code</Text>
+          </Pressable>
+          <Text style={styles.inputLabel}>DEVICE ID</Text>
+          <View style={styles.inputRow}>
+            <TextInput
+              value={deviceIdDraft}
+              onChangeText={(value) => { setDeviceIdDraft(value); setDeviceError(null); }}
+              placeholder="e.g. pond-uno-r4-001"
+              placeholderTextColor="#6A8188"
+              autoCapitalize="none"
+              autoCorrect={false}
+              style={styles.textInput}
+              accessibilityLabel="Device ID or QR code content"
+            />
+          </View>
+          <Text style={screenStyles.deviceHint}>
+            Or paste the QR code text into the fields below.
+          </Text>
+          <Text style={[styles.inputLabel, screenStyles.deviceFieldLabel]}>PRIVATE CLAIM CODE</Text>
+          <View style={styles.inputRow}>
+            <TextInput
+              value={deviceClaimCodeDraft}
+              onChangeText={(value) => { setDeviceClaimCodeDraft(value); setDeviceError(null); }}
+              placeholder="Enter the device claim code"
+              placeholderTextColor="#6A8188"
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry
+              style={styles.textInput}
+              accessibilityLabel="Private device claim code"
+            />
+          </View>
+          <Text style={[styles.inputLabel, screenStyles.deviceFieldLabel]}>POND NAME (OPTIONAL)</Text>
+          <View style={styles.inputRow}>
+            <TextInput
+              value={deviceNameDraft}
+              onChangeText={setDeviceNameDraft}
+              placeholder="e.g. Tilapia pond"
+              placeholderTextColor="#6A8188"
+              style={styles.textInput}
+              accessibilityLabel="Pond name"
+            />
+          </View>
+          {deviceError ? (
+            <Text style={screenStyles.deviceError} accessibilityRole="alert">{deviceError}</Text>
+          ) : null}
+          <Pressable
+            onPress={handleClaimDevice}
+            disabled={deviceBusy !== null}
+            style={({ pressed }) => [
+              styles.primaryButton,
+              screenStyles.deviceClaimButton,
+              deviceBusy === 'claim' && styles.primaryButtonDisabled,
+              pressed && styles.tabButtonPressed,
+            ]}
+            accessibilityRole="button"
+          >
+            <Text style={styles.primaryButtonText}>
+              {deviceBusy === 'claim' ? 'Linking device…' : 'Link device'}
+            </Text>
+          </Pressable>
+        </View>
+      </View>
  
       {sections.map((section) => (
-        <View key={section.title}>
-          <View style={styles.settingsSectionHeader}>
-            <Text style={styles.settingsSectionHeaderIcon}>{section.icon}</Text>
-            <Text style={styles.settingsSectionHeaderText}>{section.title}</Text>
-          </View>
+        <View
+          key={section.title}
+          onLayout={section.title === 'NOTIFICATIONS' && focusSmsSettings
+            ? (event) => {
+                scrollViewRef.current?.scrollTo({ y: event.nativeEvent.layout.y, animated: true });
+                onSmsSettingsFocused();
+              }
+            : undefined}
+        >
+          {section.title !== 'ACCOUNT' ? (
+            <View style={styles.settingsSectionHeader}>
+              <Text style={styles.settingsSectionHeaderIcon}>{section.icon}</Text>
+              <Text style={styles.settingsSectionHeaderText}>{section.title}</Text>
+            </View>
+          ) : null}
  
           <View style={styles.settingsGroupCard}>
-            {section.rows.map((row, index) => {
+            {section.rows
+              .filter((row) => {
+                if (section.title !== 'NOTIFICATIONS') return true;
+                if (!preferences.pushNotifications && (row.key === 'alertNotifications' || row.key === 'warningNotifications')) {
+                  return false;
+                }
+                if (!preferences.smsNotifications && (row.key === 'smsCritical' || row.key === 'smsWarning')) {
+                  return false;
+                }
+                return true;
+              })
+              .map((row, index) => {
               const rowContent = (
                 <>
                   <View style={[styles.settingsIconBadge, { backgroundColor: row.iconBg }]}>
                     <Text style={styles.settingsIconBadgeText}>{row.icon}</Text>
                   </View>
                   <View style={styles.settingsRowBody}>
-                    <Text style={styles.settingsRowTitle}>{row.title}</Text>
+                    <Text style={[styles.settingsRowTitle, row.type === 'destructive' && styles.deleteAccountTitle]}>
+                      {row.title}
+                    </Text>
                     <Text style={styles.settingsRowSubtitle}>{row.subtitle}</Text>
                   </View>
                   {row.type === 'toggle' && (
@@ -429,7 +704,9 @@ export default function SettingsScreen({
                       thumbColor={preferences[row.toggleKey] ? SWITCH_THUMB_COLOR.on : SWITCH_THUMB_COLOR.off}
                     />
                   )}
-                  {row.type === 'link' && <Text style={styles.connectionChevron}>›</Text>}
+                  {(row.type === 'link' || row.type === 'destructive') && (
+                    <Text style={styles.connectionChevron}>›</Text>
+                  )}
                   {row.type === 'action' && (
                     <View style={styles.settingsDatePill}>
                       <Text style={styles.settingsDatePillText}>{row.badge}</Text>
@@ -447,17 +724,62 @@ export default function SettingsScreen({
                   </View>
                 );
               }
- 
+
               return (
                 <Pressable
                   key={row.key}
                   onPress={row.onPress}
+                  disabled={row.type === 'destructive' && deletingAccount}
                   style={({ pressed }) => [...rowStyle, pressed && styles.tabButtonPressed]}
                 >
                   {rowContent}
                 </Pressable>
               );
-            })}
+              })}
+            {section.title === 'NOTIFICATIONS' && preferences.smsNotifications ? (
+              <View style={screenStyles.smsNumberForm}>
+                <Text style={screenStyles.smsNumberTitle}>SMS recipient</Text>
+                <Text style={screenStyles.smsNumberCopy}>
+                  This number is shared with your linked SIM800L boards.
+                </Text>
+                <View style={[styles.inputRow, screenStyles.smsNumberInput]}>
+                  <TextInput
+                    value={phoneNumberDraft}
+                    onChangeText={(value) => {
+                      setPhoneNumberDraft(value);
+                      setSmsNumberError(null);
+                      setSmsNumberSaved(false);
+                    }}
+                    placeholder="+639171234567"
+                    placeholderTextColor="#71868C"
+                    keyboardType="phone-pad"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    style={styles.textInput}
+                    accessibilityLabel="SMS recipient phone number"
+                  />
+                </View>
+                <Text style={screenStyles.smsNumberHint}>Include the + and country code.</Text>
+                {smsNumberSaved ? (
+                  <Text style={screenStyles.smsNumberSaved}>Saved. Linked boards update within about a minute.</Text>
+                ) : null}
+                {smsNumberError ? (
+                  <Text style={screenStyles.deviceError} accessibilityRole="alert">{smsNumberError}</Text>
+                ) : null}
+                <Pressable
+                  onPress={handleSaveSmsNumber}
+                  disabled={smsNumberSaving}
+                  accessibilityRole="button"
+                  style={({ pressed }) => [
+                    screenStyles.smsNumberSaveButton,
+                    smsNumberSaving && styles.primaryButtonDisabled,
+                    pressed && styles.tabButtonPressed,
+                  ]}
+                >
+                  <Text style={screenStyles.smsNumberSaveText}>{smsNumberSaving ? 'Saving…' : 'Save number'}</Text>
+                </Pressable>
+              </View>
+            ) : null}
           </View>
         </View>
       ))}
@@ -488,11 +810,7 @@ export default function SettingsScreen({
                   value={farmNameDraft}
                   onChangeText={setFarmNameDraft}
                   placeholder="e.g. Pond one"
-<<<<<<< HEAD
-                  placeholderTextColor="#4f6b6d"
-=======
                   placeholderTextColor="#49656D"
->>>>>>> origin/main
                   style={styles.textInput}
                 />
               </View>
@@ -508,11 +826,7 @@ export default function SettingsScreen({
                   value={phoneNumberDraft}
                   onChangeText={setPhoneNumberDraft}
                   placeholder="e.g. +639171234567"
-<<<<<<< HEAD
-                  placeholderTextColor="#4f6b6d"
-=======
                   placeholderTextColor="#49656D"
->>>>>>> origin/main
                   keyboardType="phone-pad"
                   style={styles.textInput}
                 />
@@ -548,11 +862,7 @@ export default function SettingsScreen({
                   value={exportDate}
                   onChangeText={setExportDate}
                   placeholder="YYYY-MM-DD"
-<<<<<<< HEAD
-                  placeholderTextColor="#4f6b6d"
-=======
                   placeholderTextColor="#49656D"
->>>>>>> origin/main
                   keyboardType="numbers-and-punctuation"
                   style={styles.textInput}
                 />
@@ -573,8 +883,110 @@ export default function SettingsScreen({
           </View>
         </View>
       </Modal>
+
+      <Modal
+        visible={qrScannerVisible}
+        animationType="slide"
+        onRequestClose={() => setQrScannerVisible(false)}
+      >
+        <View style={screenStyles.qrScanner}>
+          {QrCameraView ? (
+            <QrCameraView
+              style={screenStyles.qrCamera}
+              facing="back"
+              barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+              onBarcodeScanned={handleQrScanned}
+            />
+          ) : null}
+          <View style={screenStyles.qrScannerOverlay}>
+            <View style={screenStyles.qrScannerHeader}>
+              <Text style={screenStyles.qrScannerTitle}>Scan device QR code</Text>
+              <Pressable
+                onPress={() => setQrScannerVisible(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Close QR scanner"
+                style={screenStyles.qrScannerClose}
+              >
+                <Text style={screenStyles.qrScannerCloseText}>×</Text>
+              </Pressable>
+            </View>
+            <View style={screenStyles.qrScanFrame} />
+            <Text style={screenStyles.qrScannerHint}>
+              Hold the QR code inside the frame.
+            </Text>
+          </View>
+        </View>
+      </Modal>
  
     </ScrollView>
   );
 }
+
+const screenStyles = StyleSheet.create({
+  deviceSection: { marginBottom: 8 },
+  deviceIntro: { color: '#60777E', fontSize: 12, lineHeight: 18, marginBottom: 13, marginTop: 4 },
+  deviceEmpty: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#DDE7EB',
+    borderRadius: 16,
+    borderWidth: 1,
+    marginBottom: 12,
+    padding: 15,
+  },
+  deviceEmptyTitle: { color: '#172B33', fontSize: 14, fontWeight: '800' },
+  deviceEmptyCopy: { color: '#60777E', fontSize: 12, lineHeight: 17, marginTop: 4 },
+  deviceCard: {
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderColor: '#DDE7EB',
+    borderRadius: 16,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 10,
+    padding: 14,
+  },
+  deviceInfo: { flex: 1, minWidth: 0 },
+  deviceName: { color: '#172B33', fontSize: 14, fontWeight: '800' },
+  deviceId: { color: '#60777E', fontSize: 11, marginTop: 3 },
+  deviceSelected: { color: '#078A95', fontSize: 9, fontWeight: '800', letterSpacing: 0.7, marginTop: 5 },
+  deviceSmallButton: { backgroundColor: '#E6F5F5', borderRadius: 10, paddingHorizontal: 11, paddingVertical: 8 },
+  deviceSmallButtonText: { color: '#087F8C', fontSize: 11, fontWeight: '800' },
+  deviceUnlinkButton: { paddingHorizontal: 5, paddingVertical: 8 },
+  deviceUnlinkText: { color: '#C84F5B', fontSize: 11, fontWeight: '700' },
+  deviceForm: {
+    backgroundColor: '#FFFFFF',
+    borderColor: '#DDE7EB',
+    borderRadius: 18,
+    borderWidth: 1,
+    marginTop: 4,
+    padding: 16,
+  },
+  deviceFormTitle: { color: '#172B33', fontSize: 16, fontWeight: '800' },
+  deviceFormSubtitle: { color: '#71868C', fontSize: 11, lineHeight: 16, marginBottom: 14, marginTop: 4 },
+  deviceHint: { color: '#6A8188', fontSize: 10, lineHeight: 14, marginTop: 6 },
+  deviceFieldLabel: { marginTop: 14 },
+  deviceError: { backgroundColor: '#FFF1F2', borderRadius: 10, color: '#A83E49', fontSize: 11, lineHeight: 16, marginTop: 12, overflow: 'hidden', padding: 10 },
+  deviceClaimButton: { borderRadius: 14, marginTop: 15 },
+  qrScanButton: { alignItems: 'center', alignSelf: 'flex-start', backgroundColor: '#EAF5F2', borderRadius: 12, flexDirection: 'row', marginBottom: 14, paddingHorizontal: 13, paddingVertical: 10 },
+  qrScanButtonIcon: { color: '#087C73', fontSize: 17, fontWeight: '800', marginRight: 8 },
+  qrScanButtonText: { color: '#087C73', fontSize: 12, fontWeight: '800' },
+  qrScanner: { backgroundColor: '#102A30', flex: 1 },
+  qrCamera: { flex: 1 },
+  qrScannerOverlay: { ...StyleSheet.absoluteFill, alignItems: 'center', justifyContent: 'space-between', padding: 24 },
+  qrScannerHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', width: '100%' },
+  qrScannerTitle: { color: '#FFFFFF', fontSize: 17, fontWeight: '800' },
+  qrScannerClose: { alignItems: 'center', backgroundColor: '#102A30CC', borderRadius: 18, height: 36, justifyContent: 'center', width: 36 },
+  qrScannerCloseText: { color: '#FFFFFF', fontSize: 25, lineHeight: 28 },
+  qrScanFrame: { borderColor: '#67D2B2', borderRadius: 22, borderWidth: 3, height: 240, width: 240 },
+  qrScannerHint: { backgroundColor: '#102A30CC', borderRadius: 12, color: '#FFFFFF', fontSize: 12, overflow: 'hidden', paddingHorizontal: 15, paddingVertical: 10, textAlign: 'center' },
+  smsNumberForm: { borderTopColor: '#E7ECEE', borderTopWidth: 1, marginTop: 4, padding: 15 },
+  smsNumberTitle: { color: '#203840', fontSize: 13, fontWeight: '800' },
+  smsNumberCopy: { color: '#71868C', fontSize: 11, lineHeight: 16, marginTop: 3 },
+  smsNumberInput: { marginTop: 12 },
+  smsNumberHint: { color: '#71868C', fontSize: 10, marginTop: 5 },
+  smsNumberSaved: { color: '#087C73', fontSize: 10, lineHeight: 15, marginTop: 7 },
+  smsNumberSaveButton: { alignItems: 'center', alignSelf: 'flex-start', backgroundColor: '#173C45', borderRadius: 11, marginTop: 12, paddingHorizontal: 16, paddingVertical: 10 },
+  smsNumberSaveText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
+});
  

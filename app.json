@@ -26,6 +26,12 @@
     "plugins": [
       "expo-status-bar",
       "expo-notifications",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow IsdaApp to scan device QR codes."
+        }
+      ],
       "@react-native-google-signin/google-signin"
     ],
     "extra": {

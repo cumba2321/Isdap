@@ -7,6 +7,7 @@ import { formatRelativeTime } from '../utils';
 
 type AlertScreenProps = {
   activeAlerts: ActiveAlert[];
+  hasDevice: boolean;
   showCritical: boolean;
   showWarning: boolean;
   clearedAlertsAt: number | null;
@@ -15,19 +16,20 @@ type AlertScreenProps = {
 
 function getAlertTitle(alert: ActiveAlert) {
   return alert.severity === 'critical'
-    ? `Critical ${alert.metric.label}`
-    : `${alert.metric.label} Warning`;
+    ? `${alert.metric.label} needs attention`
+    : `${alert.metric.label} is outside range`;
 }
 
 function getAlertMessage(alert: ActiveAlert) {
   const formatted = `${formatValue(alert.value, alert.metric.key)} ${alert.metric.unit}`;
   return alert.severity === 'critical'
-    ? `${alert.metric.label} has reached a critical level at ${formatted}.`
-    : `${alert.metric.label} is trending outside the safe range at ${formatted}.`;
+    ? `Current reading is ${formatted}. Review the pond conditions as soon as possible.`
+    : `Current reading is ${formatted}. Keep an eye on this parameter.`;
 }
 
 export default function AlertScreen({
   activeAlerts,
+  hasDevice,
   showCritical,
   showWarning,
   clearedAlertsAt,
@@ -59,17 +61,53 @@ export default function AlertScreen({
       <View style={styles.header}>
         <View>
           <Text style={styles.title}>Alerts</Text>
-          <Text style={styles.screenSubtitle}>System Notifications</Text>
+          <Text style={styles.screenSubtitle}>Pond health, at a glance</Text>
         </View>
       </View>
 
-      <View style={[styles.alertsSummaryCard, hasAlerts ? styles.alertsSummaryCardActive : styles.alertsSummaryCardClear]}>
-        <Text style={styles.alertsSummaryTitle}>{hasAlerts ? 'Active Alerts' : 'All Clear'}</Text>
-        <Text style={styles.alertsSummaryCopy}>
-          {hasAlerts
-            ? `${visibleAlerts.length} active alert${visibleAlerts.length === 1 ? '' : 's'} requiring attention (${criticalCount} critical, ${warningCount} warning)`
-            : 'All readings are currently within their safe ranges.'}
-        </Text>
+      <View style={[styles.alertsSummaryCard, hasAlerts || isMuted ? styles.alertsSummaryCardActive : styles.alertsSummaryCardClear]}>
+        <View style={styles.alertsSummaryTop}>
+          <View style={[
+            styles.alertsSummaryMark,
+            hasAlerts ? styles.alertsSummaryMarkActive : styles.alertsSummaryMarkClear,
+          ]}>
+            <Text style={[
+              styles.alertsSummaryMarkText,
+              hasAlerts ? styles.alertsSummaryMarkTextActive : styles.alertsSummaryMarkTextClear,
+            ]}>
+              {!hasDevice ? '—' : hasAlerts ? '!' : '✓'}
+            </Text>
+          </View>
+          <View style={styles.alertsSummaryBody}>
+            <Text style={styles.alertsSummaryEyebrow}>
+              {!hasDevice ? 'SENSOR STATUS' : isMuted ? 'NOTIFICATION STATUS' : hasAlerts ? 'MONITORING STATUS' : 'POND STATUS'}
+            </Text>
+            <Text style={styles.alertsSummaryTitle}>
+              {!hasDevice ? 'Connect a sensor' : isMuted ? 'Alerts are paused' : hasAlerts ? 'Attention required' : 'Looking good'}
+            </Text>
+            <Text style={styles.alertsSummaryCopy}>
+              {!hasDevice
+                ? 'Link a sensor to see live water-quality alerts here.'
+                : isMuted
+                ? 'Some readings are outside range, but alert notifications are turned off.'
+                : hasAlerts
+                ? 'One or more readings are outside their target range.'
+                : 'Your latest readings are within their target ranges.'}
+            </Text>
+          </View>
+        </View>
+        {hasAlerts ? (
+          <View style={styles.alertsCountRow}>
+            <View style={styles.alertsCountPill}>
+              <View style={[styles.alertsCountDot, styles.alertsCountDotCritical]} />
+              <Text style={styles.alertsCountText}>{criticalCount} critical</Text>
+            </View>
+            <View style={styles.alertsCountPill}>
+              <View style={[styles.alertsCountDot, styles.alertsCountDotWarning]} />
+              <Text style={styles.alertsCountText}>{warningCount} to review</Text>
+            </View>
+          </View>
+        ) : null}
       </View>
 
       {hasAlerts &&
@@ -90,13 +128,25 @@ export default function AlertScreen({
                     isCritical ? styles.alertIconCircleCritical : styles.alertIconCircleWarning,
                   ]}
                 >
-                  <Text style={styles.alertIconCircleText}>{isCritical ? '🚨' : '⚠️'}</Text>
+                  <Text style={[
+                    styles.alertMetricIcon,
+                    { color: alert.metric.color },
+                  ]}>{alert.metric.icon}</Text>
                 </View>
                 <View style={styles.alertItemTitleWrap}>
                   <Text style={styles.alertItemTitle}>{getAlertTitle(alert)}</Text>
-                  <Text style={isCritical ? styles.alertItemBadgeCritical : styles.alertItemBadgeWarning}>
-                    {isCritical ? 'CRITICAL ALERT' : 'WARNING'}
-                  </Text>
+                  <View style={[
+                    styles.alertSeverityPill,
+                    isCritical ? styles.alertSeverityPillCritical : styles.alertSeverityPillWarning,
+                  ]}>
+                    <View style={[
+                      styles.alertSeverityDot,
+                      isCritical ? styles.alertSeverityDotCritical : styles.alertSeverityDotWarning,
+                    ]} />
+                    <Text style={isCritical ? styles.alertItemBadgeCritical : styles.alertItemBadgeWarning}>
+                      {isCritical ? 'CRITICAL' : 'REVIEW'}
+                    </Text>
+                  </View>
                 </View>
                 <Text style={styles.alertItemTime}>{formatRelativeTime(alert.detectedAt, now)}</Text>
               </View>
@@ -109,15 +159,15 @@ export default function AlertScreen({
                   <Text style={styles.thresholdValue}>{alert.metric.label}</Text>
                 </View>
                 <View style={styles.thresholdCol}>
-                  <Text style={styles.thresholdLabel}>CURRENT</Text>
+                  <Text style={styles.thresholdLabel}>CURRENT READING</Text>
                   <Text style={styles.thresholdValue}>
                     {formatValue(alert.value, alert.metric.key)} {alert.metric.unit}
                   </Text>
                 </View>
                 <View style={styles.thresholdCol}>
-                  <Text style={styles.thresholdLabel}>THRESHOLD</Text>
+                  <Text style={styles.thresholdLabel}>TARGET RANGE</Text>
                   <Text style={styles.thresholdValue}>
-                    {alert.metric.range} ({isCritical ? 'Critical' : 'Warning'})
+                    {alert.metric.range}
                   </Text>
                 </View>
               </View>
@@ -130,25 +180,31 @@ export default function AlertScreen({
           <View style={styles.emptyBadge}>
             <Text style={styles.emptyBadgeText}>{isMuted ? 'MUTE' : 'OK'}</Text>
           </View>
-          <Text style={styles.emptyTitle}>{isMuted ? 'Alerts are muted' : 'No active alerts'}</Text>
+          <Text style={styles.emptyTitle}>
+            {!hasDevice ? 'Your pond is not connected' : isMuted ? 'Notifications are paused' : 'No active alerts'}
+          </Text>
           <Text style={styles.emptyCopy}>
-            {isMuted
-              ? 'Readings are out of range, but Alert or Warning Notifications are turned off in Settings.'
-              : 'All readings are within their safe ranges.'}
+            {!hasDevice
+              ? 'Link a sensor in Settings to start monitoring water quality.'
+              : isMuted
+              ? 'Some readings are outside their target ranges. Turn alerts back on in Settings to see them here.'
+              : 'Everything is within range. We’ll show an alert here if a reading needs your attention.'}
           </Text>
         </View>
       )}
 
       <Pressable
         onPress={onClearAll}
-        disabled={!hasAlerts}
+        disabled={!hasDevice || !hasAlerts}
+        accessibilityRole="button"
+        accessibilityState={{ disabled: !hasDevice || !hasAlerts }}
         style={({ pressed }) => [
           styles.clearAllButton,
-          !hasAlerts && styles.clearAllButtonDisabled,
-          pressed && hasAlerts && styles.tabButtonPressed,
+          (!hasDevice || !hasAlerts) && styles.clearAllButtonDisabled,
+          pressed && hasDevice && hasAlerts && styles.tabButtonPressed,
         ]}
       >
-        <Text style={styles.clearAllButtonText}>Clear All Alerts</Text>
+        <Text style={styles.clearAllButtonText}>Clear visible alerts</Text>
       </Pressable>
     </ScrollView>
   );

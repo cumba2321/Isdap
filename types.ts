@@ -55,4 +55,13 @@ export type NotificationPreferences = {
 };
  
 export type AuthResult = { success: true } | { success: false; error: string };
+
+export type GoogleIdentityResult =
+  | { success: true; email: string }
+  | { success: false; error: string };
+
+export type ManagedDevice = {
+  deviceId: string;
+  name: string;
+};
  
