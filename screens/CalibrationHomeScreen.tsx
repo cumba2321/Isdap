@@ -109,7 +109,7 @@ export default function CalibrationScreen({
   onSaveTemperature,
   onClearTemperature,
 }: CalibrationScreenProps) {
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [selectedIndex, setSelectedIndex] = useState(calibrationMetrics.length);
   const [voltageSamples, setVoltageSamples] = useState<Partial<Record<CalibratableMetricKey, number[]>>>({});
   const [now, setNow] = useState(Date.now());
   const [calibrationOpen, setCalibrationOpen] = useState(false);
@@ -126,13 +126,18 @@ export default function CalibrationScreen({
   const [temperatureNotice, setTemperatureNotice] = useState<string | null>(null);
   const [savingTemperature, setSavingTemperature] = useState(false);
   const lastSampleAt = useRef<number | null>(null);
-  const selectedKey = calibrationMetrics[selectedIndex];
+  const showingTemperature = selectedIndex === calibrationMetrics.length;
+  const selectedKey = calibrationMetrics[selectedIndex % calibrationMetrics.length];
   const metric = metrics.find((candidate) => candidate.key === selectedKey)!;
-  const value = isLive ? reading[selectedKey] : 0;
-  const isOutOfRange = isLive && metric.getSeverity(value) !== null;
+  const displayMetric = showingTemperature
+    ? metrics.find((candidate) => candidate.key === 'temp')!
+    : metric;
+  const displayLabel = showingTemperature ? 'Temperature' : labels[selectedKey];
+  const value = isLive ? reading[displayMetric.key] : 0;
+  const isOutOfRange = isLive && displayMetric.getSeverity(value) !== null;
   const status = !isLive ? 'Preview' : isOutOfRange ? 'Needs attention' : 'Normal';
-  const sensorVoltage = voltages[`${selectedKey}Voltage`];
-  const recentVoltageSamples = voltageSamples[selectedKey] ?? [];
+  const sensorVoltage = showingTemperature ? undefined : voltages[`${selectedKey}Voltage`];
+  const recentVoltageSamples = showingTemperature ? [] : voltageSamples[selectedKey] ?? [];
   const voltageRange = recentVoltageSamples.length === 5
     ? Math.max(...recentVoltageSamples) - Math.min(...recentVoltageSamples)
     : null;
@@ -395,41 +400,53 @@ export default function CalibrationScreen({
         <Text style={screenStyles.sectionTitle}>Current reading</Text>
         <Pressable
           onPress={() => {
-            const nextIndex = (selectedIndex + 1) % calibrationMetrics.length;
+            const nextIndex = (selectedIndex + 1) % (calibrationMetrics.length + 1);
             setSelectedIndex(nextIndex);
             setCalibrationOpen(false);
-            resetCalibration(calibrationMetrics[nextIndex]);
+            if (nextIndex < calibrationMetrics.length) {
+              resetCalibration(calibrationMetrics[nextIndex]);
+            }
           }}
           style={[screenStyles.readingCircle, isOutOfRange && screenStyles.readingCircleAlert]}
           accessibilityRole="button"
-          accessibilityLabel={`${labels[selectedKey]} ${formatValue(value, selectedKey)} ${metric.unit}. Water temperature ${isLive ? `${formatValue(reading.temp, 'temp')} degrees Celsius` : 'unavailable'}. Sensor voltage ${sensorVoltage === undefined ? 'unavailable' : `${sensorVoltage.toFixed(3)} volts`}, ${voltageIsStable ? 'stable' : 'not stable'}. Tap for next sensor.`}
+          accessibilityLabel={`${displayLabel} ${formatValue(value, displayMetric.key)} ${displayMetric.unit}.${showingTemperature ? '' : ` Water temperature ${isLive ? `${formatValue(reading.temp, 'temp')} degrees Celsius` : 'unavailable'}. Sensor voltage ${sensorVoltage === undefined ? 'unavailable' : `${sensorVoltage.toFixed(3)} volts`}, ${voltageIsStable ? 'stable' : 'not stable'}.`} Tap for next sensor.`}
         >
-          <Text style={screenStyles.metricName}>{labels[selectedKey]}</Text>
+          <Text style={screenStyles.metricName}>{displayLabel}</Text>
           <Text style={[screenStyles.readingStatus, isOutOfRange && screenStyles.alertText]}>{status}</Text>
-          <Text style={screenStyles.readingValue}>{formatValue(value, selectedKey)}</Text>
-          <Text style={screenStyles.readingUnit}>{metric.unit}</Text>
-          <Text style={screenStyles.temperatureValue}>
-            Water temperature {isLive ? `${formatValue(reading.temp, 'temp')} °C` : '—'}
-          </Text>
-          <Text style={screenStyles.voltageValue}>
-            Voltage {sensorVoltage === undefined ? '—' : `${sensorVoltage.toFixed(3)} V`}
-          </Text>
-          <Text style={[
-            screenStyles.voltageHint,
-            voltageIsStable && screenStyles.voltageHintStable,
-            voltageUpdatedAt !== null && !voltageIsFresh && screenStyles.voltageHintStale,
-          ]}>
-            {sensorVoltage === undefined
-              ? 'Voltage unavailable'
-              : !voltageIsFresh
-                ? 'Voltage is stale'
-                : voltageIsStable
-                    ? `STABLE · range ${voltageRange?.toFixed(3)} V (limit 0.015 V)`
-                    : `STABILIZING · ${recentVoltageSamples.length}/5 samples${voltageRange === null ? '' : ` · range ${voltageRange.toFixed(3)} V`}`}
-          </Text>
+          <Text style={screenStyles.readingValue}>{formatValue(value, displayMetric.key)}</Text>
+          <Text style={screenStyles.readingUnit}>{displayMetric.unit}</Text>
+          {!showingTemperature ? (
+            <>
+              <View style={screenStyles.temperatureBadge}>
+                <Text style={screenStyles.temperatureLabel}>WATER TEMP</Text>
+                <Text style={screenStyles.temperatureValue}>
+                  {isLive ? `${formatValue(reading.temp, 'temp')} °C` : '—'}
+                </Text>
+              </View>
+              <Text style={screenStyles.voltageValue}>
+                Voltage {sensorVoltage === undefined ? '—' : `${sensorVoltage.toFixed(3)} V`}
+              </Text>
+              <Text style={[
+                screenStyles.voltageHint,
+                voltageIsStable && screenStyles.voltageHintStable,
+                voltageUpdatedAt !== null && !voltageIsFresh && screenStyles.voltageHintStale,
+              ]}>
+                {sensorVoltage === undefined
+                  ? 'Voltage unavailable'
+                  : !voltageIsFresh
+                    ? 'Voltage is stale'
+                    : voltageIsStable
+                      ? `STABLE · range ${voltageRange?.toFixed(3)} V (limit 0.015 V)`
+                      : `STABILIZING · ${recentVoltageSamples.length}/5 samples${voltageRange === null ? '' : ` · range ${voltageRange.toFixed(3)} V`}`}
+              </Text>
+            </>
+          ) : null}
         </Pressable>
-        <Text style={screenStyles.sensorHint}>Tap the circle to view the next sensor</Text>
+        <Text style={screenStyles.sensorHint}>
+          Tap the circle to view the next {showingTemperature ? 'sensor' : 'sensor, including temperature'}
+        </Text>
 
+        {showingTemperature ? (
         <View style={screenStyles.calibrationCard}>
           <View style={screenStyles.calibrationHeader}>
             <View style={screenStyles.calibrationHeading}>
@@ -503,7 +520,10 @@ export default function CalibrationScreen({
             <Text style={screenStyles.captureHint}>A live connected temperature sensor is required.</Text>
           ) : null}
         </View>
+        ) : null}
 
+        {!showingTemperature ? (
+        <>
         <Pressable
           onPress={() => {
             setCalibrationOpen((open) => !open);
@@ -709,6 +729,8 @@ export default function CalibrationScreen({
             ) : null}
           </View>
         )}
+        </>
+        ) : null}
       </ScrollView>
     </View>
   );
@@ -754,8 +776,9 @@ const screenStyles = StyleSheet.create({
     justifyContent: 'flex-start',
     maxHeight: 400,
     maxWidth: 400,
-    paddingBottom: 14,
-    paddingTop: '8%',
+    paddingBottom: 12,
+    paddingHorizontal: 8,
+    paddingTop: 12,
     shadowColor: '#102F36',
     shadowOffset: { height: 5, width: 0 },
     shadowOpacity: 0.1,
@@ -763,13 +786,24 @@ const screenStyles = StyleSheet.create({
     width: '96%',
   },
   readingCircleAlert: { borderColor: '#C84F5B' },
-  metricName: { color: '#172B33', fontSize: 30, fontWeight: '700', marginTop: '2%' },
-  readingStatus: { color: '#60777E', fontSize: 16, fontWeight: '500', marginTop: 1 },
+  metricName: { color: '#172B33', fontSize: 27, fontWeight: '700', marginTop: 2 },
+  readingStatus: { color: '#60777E', fontSize: 14, fontWeight: '500', marginTop: 1 },
   alertText: { color: '#9D3944' },
-  readingValue: { color: '#153D46', fontSize: 66, fontWeight: '700', marginTop: '5%' },
-  readingUnit: { color: '#60777E', fontSize: 19, fontWeight: '500', marginTop: '1%' },
-  temperatureValue: { color: '#49656D', fontSize: 12, fontWeight: '700', marginTop: 8 },
-  voltageValue: { color: '#49656D', fontSize: 15, fontWeight: '700', marginTop: 'auto' },
+  readingValue: { color: '#153D46', fontSize: 56, fontWeight: '700', marginTop: 2 },
+  readingUnit: { color: '#60777E', fontSize: 17, fontWeight: '500', marginTop: 0 },
+  temperatureBadge: {
+    alignItems: 'center',
+    backgroundColor: '#EAF5F5',
+    borderRadius: 12,
+    flexDirection: 'row',
+    gap: 7,
+    marginTop: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  temperatureLabel: { color: '#60777E', fontSize: 9, fontWeight: '800', letterSpacing: 0.5 },
+  temperatureValue: { color: '#153D46', fontSize: 14, fontWeight: '800' },
+  voltageValue: { color: '#49656D', fontSize: 14, fontWeight: '700', marginTop: 'auto' },
   voltageHint: { color: '#A87500', fontSize: 9, fontWeight: '900', letterSpacing: 0.2, marginTop: 3 },
   voltageHintStable: { color: '#14734E' },
   voltageHintStale: { color: '#9D3944' },
