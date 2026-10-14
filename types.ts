@@ -12,10 +12,42 @@ export type SensorLog = PondReading & {
   recordedAt: number;
 };
  
-export type TabKey = 'dashboard' | 'history' | 'alert' | 'settings';
- 
+export type TabKey = 'dashboard' | 'history' | 'alert' | 'calibration' | 'settings';
+
 export type MetricKey = keyof PondReading;
- 
+
+export type CalibratableMetricKey = 'ph' | 'tds' | 'ec' | 'turbidity' | 'do';
+
+export type CalibrationMethod = 'one-point' | 'two-point' | 'three-point' | 'do-air' | 'do-air-zero';
+
+export type CalibrationPoint = {
+  referenceValue: number;
+  measuredValue: number;
+  voltage: number;
+};
+
+export type SensorCalibration = {
+  referenceValue: number;
+  measuredValue: number;
+  adjustment: number;
+  calibratedAt: number;
+  method?: CalibrationMethod;
+  points?: CalibrationPoint[];
+  offset?: number;
+};
+
+export type TemperatureCalibration = {
+  referenceValue: number;
+  measuredValue: number;
+  offset: number;
+  calibratedAt: number;
+};
+
+export type SensorCalibrations = Partial<Record<CalibratableMetricKey, SensorCalibration>> & {
+  temperature?: TemperatureCalibration;
+};
+export type SensorVoltages = Partial<Record<`${CalibratableMetricKey}Voltage`, number>>;
+
 export type Severity = 'critical' | 'warning';
  
 export type Metric = {

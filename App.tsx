@@ -4,18 +4,20 @@ import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import {
   deleteUser,
   GoogleAuthProvider,
+  onAuthStateChanged,
   reauthenticateWithCredential,
   signInWithCredential,
   signOut,
 } from 'firebase/auth';
 import { get, limitToLast, onValue, orderByChild, push, query, ref, runTransaction, set, update } from 'firebase/database';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Platform, SafeAreaView, Vibration, View } from 'react-native';
+import { ActivityIndicator, Alert, Platform, SafeAreaView, Vibration, View } from 'react-native';
 
 import TabBar from './components/TabBar';
 import { auth, db as database, GOOGLE_WEB_CLIENT_ID } from './firebaseConfig';
 import { demoReading, formatValue, metrics } from './metrics';
 import AlertScreen from './screens/AlertScreen';
+import CalibrationHomeScreen from './screens/CalibrationHomeScreen';
 import DashboardScreen from './screens/DashboardScreen';
 import HistoryScreen from './screens/HistoryScreen';
 import LoginScreen from './screens/LoginScreen';
@@ -26,11 +28,17 @@ import {
   Account,
   ActiveAlert,
   AuthResult,
+  CalibrationMethod,
+  CalibrationPoint,
+  CalibratableMetricKey,
   ManagedDevice,
   MetricKey,
   NotificationPreferences,
   PondReading,
+  SensorCalibration,
+  SensorCalibrations,
   SensorLog,
+  SensorVoltages,
   TabKey,
 } from './types';
 
@@ -54,7 +62,29 @@ type StoredAccount = Account & {
   clearedAlertsAt?: number;
   devices?: Record<string, { name: string }>;
   selectedDeviceId?: string | null;
+  sensorCalibrations?: Record<string, SensorCalibrations>;
 };
+
+const CALIBRATABLE_METRICS: CalibratableMetricKey[] = ['ph', 'tds', 'ec', 'turbidity', 'do'];
+const EMPTY_SENSOR_CALIBRATIONS: SensorCalibrations = {};
+
+function applySensorCalibrations(
+  reading: PondReading,
+  calibrations: SensorCalibrations,
+): PondReading {
+  const adjusted = { ...reading };
+  adjusted.temp = reading.temp + (calibrations.temperature?.offset ?? 0);
+  CALIBRATABLE_METRICS.forEach((key) => {
+    const calibration = calibrations[key];
+    if (!calibration) return;
+    adjusted[key] = calibration.points?.length
+      ? reading[key] * calibration.adjustment + (calibration.offset ?? 0)
+      : key === 'ph'
+        ? reading[key] + calibration.adjustment
+        : reading[key] * calibration.adjustment;
+  });
+  return adjusted;
+}
 
 const DEFAULT_PREFERENCES: NotificationPreferences = {
   pushNotifications: true,
@@ -70,13 +100,17 @@ const DEFAULT_PREFERENCES: NotificationPreferences = {
 GoogleSignin.configure({ webClientId: GOOGLE_WEB_CLIENT_ID });
 
 export default function App() {
-  const [reading, setReading] = useState<PondReading>(demoReading);
+  const [deviceReading, setDeviceReading] = useState<PondReading>(demoReading);
+  const [sensorVoltages, setSensorVoltages] = useState<SensorVoltages>({});
+  const [voltageUpdatedAt, setVoltageUpdatedAt] = useState<number | null>(null);
   const [isLive, setIsLive] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [activeTab, setActiveTab] = useState<TabKey>('dashboard');
+  const [showCalibrationScreen, setShowCalibrationScreen] = useState(false);
   const [focusSmsSettings, setFocusSmsSettings] = useState(false);
   const [alertDetectedAt, setAlertDetectedAt] = useState<Partial<Record<MetricKey, Date>>>({});
   const [farmId, setFarmId] = useState<string | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [authScreen, setAuthScreen] = useState<AuthScreen>('login');
   const [currentAccount, setCurrentAccount] = useState<StoredAccount | null>(null);
@@ -85,12 +119,33 @@ export default function App() {
   const [historyLogs, setHistoryLogs] = useState<SensorLog[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [pushPermissionGranted, setPushPermissionGranted] = useState(false);
+  const hasRestoredInitialAuth = useRef(false);
 
   const isAuthenticated = farmId !== null;
   const managedDevices: ManagedDevice[] = Object.entries(currentAccount?.devices ?? {}).map(
     ([deviceId, device]) => ({ deviceId, name: device.name || deviceId }),
   );
   const selectedDevice = managedDevices.find((device) => device.deviceId === selectedDeviceId) ?? null;
+  const sensorCalibrations = selectedDeviceId
+    ? currentAccount?.sensorCalibrations?.[selectedDeviceId] ?? EMPTY_SENSOR_CALIBRATIONS
+    : EMPTY_SENSOR_CALIBRATIONS;
+  const reading = useMemo(
+    () => applySensorCalibrations(deviceReading, sensorCalibrations),
+    [deviceReading, sensorCalibrations],
+  );
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (!hasRestoredInitialAuth.current) {
+        hasRestoredInitialAuth.current = true;
+        setFarmId(user?.uid ?? null);
+        setAuthReady(true);
+        return;
+      }
+      if (!user) setFarmId(null);
+    });
+    return unsubscribe;
+  }, []);
 
   // Each account is stored under its Firebase Auth UID, so account reads stay
   // scoped to the Google account that authenticated.
@@ -117,7 +172,6 @@ export default function App() {
   }, [currentAccount]);
 
   const authenticateWithGoogle = async () => {
-    await GoogleSignin.signOut();
     const response = await GoogleSignin.signIn();
     if (response.type === 'cancelled') {
       throw new Error('Google sign-in was cancelled.');
@@ -201,6 +255,7 @@ export default function App() {
       setCurrentAccount(null);
       setFarmId(null);
       setSelectedDeviceId(null);
+      setShowCalibrationScreen(false);
       setAuthScreen('login');
       setActiveTab('dashboard');
     } catch {
@@ -248,6 +303,7 @@ export default function App() {
       setCurrentAccount(null);
       setFarmId(null);
       setSelectedDeviceId(null);
+      setShowCalibrationScreen(false);
       setAuthScreen('login');
       setActiveTab('dashboard');
       return { success: true };
@@ -288,6 +344,238 @@ export default function App() {
       return { success: true };
     } catch {
       return { success: false, error: 'Could not save your farm profile. Check your connection and database rules.' };
+    }
+  };
+
+  const handleSaveSensorCalibration = async (
+    key: CalibratableMetricKey,
+    method: CalibrationMethod,
+    points: CalibrationPoint[],
+  ): Promise<AuthResult> => {
+    if (!farmId || !selectedDeviceId) {
+      return { success: false, error: 'Select a linked pond before calibrating its sensors.' };
+    }
+    const allowedMethods: Record<CalibratableMetricKey, CalibrationMethod[]> = {
+      ph: ['two-point', 'three-point'],
+      tds: ['one-point', 'two-point'],
+      ec: ['two-point'],
+      turbidity: ['one-point', 'two-point'],
+      do: ['do-air', 'do-air-zero'],
+    };
+    const expectedPoints = method === 'three-point' ? 3
+      : method === 'two-point' || method === 'do-air-zero' ? 2 : 1;
+    if (!allowedMethods[key].includes(method) || points.length !== expectedPoints ||
+      points.some((point) =>
+        !Number.isFinite(point.referenceValue) ||
+        !Number.isFinite(point.measuredValue) ||
+        !Number.isFinite(point.voltage))) {
+      return { success: false, error: 'Calibration points or method are invalid for this sensor.' };
+    }
+    if (points.some((point) => point.referenceValue < 0 || point.measuredValue < 0)) {
+      return { success: false, error: 'Calibration references and readings cannot be negative.' };
+    }
+    if (key === 'ph' && points.some((point) => point.referenceValue > 14)) {
+      return { success: false, error: 'pH reference points must be between 0 and 14.' };
+    }
+    if (key === 'tds' && points.some((point) => point.referenceValue > 1000)) {
+      return { success: false, error: 'TDS calibration standards cannot exceed 1000 ppm.' };
+    }
+    const [firstPoint, secondPoint] = points;
+    if (points.length === 1 && (firstPoint.referenceValue <= 0 || firstPoint.measuredValue <= 0)) {
+      return { success: false, error: 'One-point calibration requires positive reference and sensor readings.' };
+    }
+    if (key === 'do' && method === 'do-air-zero' && secondPoint.referenceValue !== 0) {
+      return { success: false, error: 'The second DO reference must be 0 mg/L for zero-oxygen calibration.' };
+    }
+    if (key === 'do' && method === 'do-air-zero' && firstPoint.referenceValue === 0) {
+      return { success: false, error: 'The first DO reference must be the air calibration point.' };
+    }
+    if ((key === 'tds' || key === 'turbidity') && method === 'two-point' &&
+      secondPoint.referenceValue === 0) {
+      return { success: false, error: 'Use the zero/low standard as the first two-point reference.' };
+    }
+    if (secondPoint && points.some((point) => point.referenceValue === 0) &&
+      !((key === 'do' && method === 'do-air-zero') ||
+        ((key === 'tds' || key === 'turbidity') && method === 'two-point'))) {
+      return { success: false, error: 'A zero reference is only supported for DO air/zero, TDS, or turbidity two-point calibration.' };
+    }
+    if (points.some((point) => point.measuredValue === 0 &&
+      !(point.referenceValue === 0 && secondPoint &&
+        ((key === 'do' && method === 'do-air-zero') ||
+          ((key === 'tds' || key === 'turbidity') && method === 'two-point'))))) {
+      return { success: false, error: 'A zero sensor reading is only valid at a supported zero-reference point.' };
+    }
+    if (points.some((point, index) => points.slice(index + 1).some((otherPoint) =>
+      Math.abs(otherPoint.referenceValue - point.referenceValue) < 0.000001 ||
+      Math.abs(otherPoint.measuredValue - point.measuredValue) < 0.000001))) {
+      return { success: false, error: 'Multi-point calibration needs distinct reference values and sensor readings.' };
+    }
+    let adjustment: number;
+    let offset: number;
+    if (points.length === 1) {
+      adjustment = firstPoint.referenceValue / firstPoint.measuredValue;
+      offset = 0;
+    } else {
+      const meanMeasured = points.reduce((sum, point) => sum + point.measuredValue, 0) / points.length;
+      const meanReference = points.reduce((sum, point) => sum + point.referenceValue, 0) / points.length;
+      const measuredVariance = points.reduce(
+        (sum, point) => sum + (point.measuredValue - meanMeasured) ** 2,
+        0,
+      );
+      const covariance = points.reduce(
+        (sum, point) => sum + (point.measuredValue - meanMeasured) * (point.referenceValue - meanReference),
+        0,
+      );
+      adjustment = covariance / measuredVariance;
+      offset = meanReference - adjustment * meanMeasured;
+    }
+    if (!Number.isFinite(adjustment) || adjustment <= 0 || !Number.isFinite(offset)) {
+      return { success: false, error: 'Calibration points do not produce a valid sensor correction. Check both standards and readings.' };
+    }
+    const calibration: SensorCalibration = {
+      referenceValue: firstPoint.referenceValue,
+      measuredValue: firstPoint.measuredValue,
+      adjustment,
+      calibratedAt: Date.now(),
+      method,
+      points,
+      offset,
+    };
+    try {
+      await update(
+        ref(database, `${ACCOUNTS_PATH}/${farmId}/sensorCalibrations/${selectedDeviceId}`),
+        { [key]: calibration },
+      );
+      setCurrentAccount((previous) => previous
+        ? {
+            ...previous,
+            sensorCalibrations: {
+              ...previous.sensorCalibrations,
+              [selectedDeviceId]: {
+                ...previous.sensorCalibrations?.[selectedDeviceId],
+                [key]: calibration,
+              },
+            },
+          }
+        : previous);
+      return { success: true };
+    } catch {
+      return {
+        success: false,
+        error: 'Could not save the calibration to your account. Check your connection and Firebase rules.',
+      };
+    }
+  };
+
+  const handleClearSensorCalibration = async (
+    key: CalibratableMetricKey,
+  ): Promise<AuthResult> => {
+    if (!farmId || !selectedDeviceId) {
+      return { success: false, error: 'Select a linked pond before changing its sensor calibration.' };
+    }
+    try {
+      await update(
+        ref(database, `${ACCOUNTS_PATH}/${farmId}/sensorCalibrations/${selectedDeviceId}`),
+        { [key]: null },
+      );
+      setCurrentAccount((previous) => {
+        if (!previous) return previous;
+        const nextDeviceCalibrations = { ...previous.sensorCalibrations?.[selectedDeviceId] };
+        delete nextDeviceCalibrations[key];
+        const nextCalibrations = { ...previous.sensorCalibrations };
+        if (Object.keys(nextDeviceCalibrations).length > 0) {
+          nextCalibrations[selectedDeviceId] = nextDeviceCalibrations;
+        } else {
+          delete nextCalibrations[selectedDeviceId];
+        }
+        return { ...previous, sensorCalibrations: nextCalibrations };
+      });
+      return { success: true };
+    } catch {
+      return {
+        success: false,
+        error: 'Could not remove the app adjustment. Check your connection and Firebase rules.',
+      };
+    }
+  };
+
+  const handleSaveTemperatureCalibration = async (
+    referenceValue: number,
+    measuredValue: number,
+  ): Promise<AuthResult> => {
+    if (!farmId || !selectedDeviceId) {
+      return { success: false, error: 'Select a linked pond before calibrating its temperature sensor.' };
+    }
+    if (
+      !Number.isFinite(referenceValue) ||
+      !Number.isFinite(measuredValue) ||
+      referenceValue < -55 ||
+      referenceValue > 125 ||
+      measuredValue < -55 ||
+      measuredValue > 125
+    ) {
+      return { success: false, error: 'Temperature readings must be between -55 and 125 °C.' };
+    }
+
+    const calibration = {
+      referenceValue,
+      measuredValue,
+      offset: referenceValue - measuredValue,
+      calibratedAt: Date.now(),
+    };
+    try {
+      await update(
+        ref(database, `${ACCOUNTS_PATH}/${farmId}/sensorCalibrations/${selectedDeviceId}`),
+        { temperature: calibration },
+      );
+      setCurrentAccount((previous) => previous
+        ? {
+            ...previous,
+            sensorCalibrations: {
+              ...previous.sensorCalibrations,
+              [selectedDeviceId]: {
+                ...previous.sensorCalibrations?.[selectedDeviceId],
+                temperature: calibration,
+              },
+            },
+          }
+        : previous);
+      return { success: true };
+    } catch {
+      return {
+        success: false,
+        error: 'Could not save the temperature calibration. Check your connection and Firebase rules.',
+      };
+    }
+  };
+
+  const handleClearTemperatureCalibration = async (): Promise<AuthResult> => {
+    if (!farmId || !selectedDeviceId) {
+      return { success: false, error: 'Select a linked pond before changing its temperature calibration.' };
+    }
+    try {
+      await update(
+        ref(database, `${ACCOUNTS_PATH}/${farmId}/sensorCalibrations/${selectedDeviceId}`),
+        { temperature: null },
+      );
+      setCurrentAccount((previous) => {
+        if (!previous) return previous;
+        const nextDeviceCalibrations = { ...previous.sensorCalibrations?.[selectedDeviceId] };
+        delete nextDeviceCalibrations.temperature;
+        const nextCalibrations = { ...previous.sensorCalibrations };
+        if (Object.keys(nextDeviceCalibrations).length > 0) {
+          nextCalibrations[selectedDeviceId] = nextDeviceCalibrations;
+        } else {
+          delete nextCalibrations[selectedDeviceId];
+        }
+        return { ...previous, sensorCalibrations: nextCalibrations };
+      });
+      return { success: true };
+    } catch {
+      return {
+        success: false,
+        error: 'Could not remove the temperature adjustment. Check your connection and Firebase rules.',
+      };
     }
   };
 
@@ -360,6 +648,7 @@ export default function App() {
     try {
       await update(ref(database, `${ACCOUNTS_PATH}/${farmId}`), { selectedDeviceId: deviceId });
       setSelectedDeviceId(deviceId);
+      setShowCalibrationScreen(false);
       setCurrentAccount((previous) => previous ? { ...previous, selectedDeviceId: deviceId } : previous);
       setActiveTab('dashboard');
       return { success: true };
@@ -487,7 +776,13 @@ export default function App() {
       (snapshot) => {
         const data = snapshot.val() as Record<string, (PondReading & { recordedAt?: number }) | null> | null;
         const logs = Object.entries(data ?? [])
-          .flatMap(([id, value]) => (value?.recordedAt ? [{ ...value, id, recordedAt: value.recordedAt }] : []))
+          .flatMap(([id, value]) => (value?.recordedAt
+            ? [{
+                ...applySensorCalibrations(value, sensorCalibrations),
+                id,
+                recordedAt: value.recordedAt,
+              }]
+            : []))
           .sort((a, b) => b.recordedAt - a.recordedAt);
         setHistoryLogs(logs);
         setHistoryLoading(false);
@@ -498,18 +793,22 @@ export default function App() {
       },
     );
     return unsubscribe;
-  }, [farmId, selectedDeviceId]);
+  }, [farmId, selectedDeviceId, sensorCalibrations]);
 
   // Pull live sensor data, unless Auto Refresh is turned off in Settings.
   useEffect(() => {
     if (!farmId || !selectedDeviceId) {
       setIsLive(false);
-      setReading(demoReading);
+      setDeviceReading(demoReading);
+      setSensorVoltages({});
+      setVoltageUpdatedAt(null);
       setHistoryLogs([]);
       return;
     }
     setIsLive(false);
-    setReading(demoReading);
+    setDeviceReading(demoReading);
+    setSensorVoltages({});
+    setVoltageUpdatedAt(null);
     setAlertDetectedAt({});
     const deviceDataPath = `${DEVICES_PATH}/${selectedDeviceId}/live_data`;
     const pondRef = ref(database, deviceDataPath);
@@ -519,10 +818,14 @@ export default function App() {
         if (!preferences.autoRefresh) return;
 
         const data = snapshot.val() as
-          | (Partial<Record<keyof PondReading, number | string>> & { ntu?: number | string })
+          | (Partial<Record<keyof PondReading, number | string>> &
+            Partial<Record<`${CalibratableMetricKey}Voltage`, number | string>> &
+            { ntu?: number | string })
           | null;
         if (!data) {
           setIsLive(false);
+          setSensorVoltages({});
+          setVoltageUpdatedAt(null);
           return;
         }
 
@@ -535,13 +838,24 @@ export default function App() {
           turbidity: Number(data.turbidity ?? data.ntu ?? demoReading.turbidity),
         };
         const recordedAt = Date.now();
+        const nextVoltages: SensorVoltages = {};
+        (['ph', 'tds', 'ec', 'turbidity', 'do'] as const).forEach((key) => {
+          const voltage = Number(data[`${key}Voltage`]);
+          if (data[`${key}Voltage`] !== undefined && Number.isFinite(voltage)) {
+            nextVoltages[`${key}Voltage`] = voltage;
+          }
+        });
         push(ref(database, `${DEVICES_PATH}/${selectedDeviceId}/sensor_history`), { ...nextReading, recordedAt });
-        setReading(nextReading);
+        setDeviceReading(nextReading);
+        setSensorVoltages(nextVoltages);
+        setVoltageUpdatedAt(recordedAt);
         setIsLive(true);
         setLastUpdated(new Date());
       },
       () => {
         setIsLive(false);
+        setSensorVoltages({});
+        setVoltageUpdatedAt(null);
         Alert.alert('Sensor unavailable', 'Could not read this device. It may be offline or Firebase access may not be configured.');
       },
     );
@@ -699,6 +1013,17 @@ export default function App() {
     previousCriticalKeys.current = currentCriticalKeys;
   }, [activeAlerts, preferences.soundAlerts]);
 
+  if (!authReady) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <StatusBar style="dark" />
+        <View style={{ alignItems: 'center', flex: 1, justifyContent: 'center' }}>
+          <ActivityIndicator color="#078A95" size="large" />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   if (!isAuthenticated) {
     if (authScreen === 'signup') {
       return (
@@ -721,7 +1046,24 @@ export default function App() {
       <StatusBar style="dark" />
 
       <View style={styles.screenContainer}>
-        {activeTab === 'dashboard' && (
+        {showCalibrationScreen ? (
+          <CalibrationHomeScreen
+            deviceName={selectedDevice?.name ?? null}
+            deviceId={selectedDeviceId}
+            reading={reading}
+            rawReading={deviceReading}
+            voltages={sensorVoltages}
+            voltageUpdatedAt={voltageUpdatedAt}
+            isLive={isLive}
+            hasAlert={hasAlert}
+            calibrations={sensorCalibrations}
+            onSave={handleSaveSensorCalibration}
+            onClear={handleClearSensorCalibration}
+            onSaveTemperature={handleSaveTemperatureCalibration}
+            onClearTemperature={handleClearTemperatureCalibration}
+          />
+        ) : null}
+        {!showCalibrationScreen && activeTab === 'dashboard' && (
           <DashboardScreen
             reading={reading}
             isLive={isLive}
@@ -740,7 +1082,7 @@ export default function App() {
             onSelectDevice={handleSelectDevice}
           />
         )}
-        {activeTab === 'alert' && (
+        {!showCalibrationScreen && activeTab === 'alert' && (
           <AlertScreen
             activeAlerts={activeAlerts}
             hasDevice={selectedDevice !== null}
@@ -750,8 +1092,8 @@ export default function App() {
             onClearAll={handleClearAllAlerts}
           />
         )}
-        {activeTab === 'history' && <HistoryScreen logs={historyLogs} isLoading={historyLoading} />}
-        {activeTab === 'settings' && (
+        {!showCalibrationScreen && activeTab === 'history' && <HistoryScreen logs={historyLogs} isLoading={historyLoading} />}
+        {!showCalibrationScreen && activeTab === 'settings' && (
           <SettingsScreen
             farmName={currentAccount?.farmName ?? 'Pond one'}
             devices={managedDevices}
@@ -775,7 +1117,19 @@ export default function App() {
         )}
       </View>
 
-      <TabBar activeTab={activeTab} onChangeTab={setActiveTab} hasAlert={hasAlert} />
+      <TabBar
+        activeTab={activeTab}
+        onChangeTab={(tab) => {
+          if (tab === 'calibration') {
+            setShowCalibrationScreen(true);
+            setActiveTab('calibration');
+            return;
+          }
+          setShowCalibrationScreen(false);
+          setActiveTab(tab);
+        }}
+        hasAlert={hasAlert}
+      />
     </SafeAreaView>
   );
 }

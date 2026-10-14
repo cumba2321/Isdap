@@ -1,0 +1,927 @@
+import { useEffect, useRef, useState } from 'react';
+import { Alert, Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
+import { formatValue, metrics } from '../metrics';
+import {
+  AuthResult,
+  CalibrationMethod,
+  CalibrationPoint,
+  CalibratableMetricKey,
+  PondReading,
+  SensorCalibrations,
+  SensorVoltages,
+} from '../types';
+
+type CalibrationOption = {
+  method: CalibrationMethod;
+  label: string;
+  points: { label: string; unit?: string; scaleToMetric?: number }[];
+};
+
+const calibrationOptions: Record<CalibratableMetricKey, CalibrationOption[]> = {
+  ph: [
+    {
+      method: 'two-point',
+      label: 'Two-point · pH 7 and pH 4 or 10',
+      points: [{ label: 'pH 7 buffer' }, { label: 'pH 4 or pH 10 buffer' }],
+    },
+    {
+      method: 'three-point',
+      label: 'Three-point · pH 4, 7, and 10',
+      points: [{ label: 'pH 4 buffer' }, { label: 'pH 7 buffer' }, { label: 'pH 10 buffer' }],
+    },
+  ],
+  tds: [
+    { method: 'one-point', label: 'One-point', points: [{ label: 'TDS standard (max 1000 ppm)' }] },
+    {
+      method: 'two-point',
+      label: 'Two-point · low and high standards',
+      points: [{ label: 'Low TDS standard' }, { label: 'High TDS standard' }],
+    },
+  ],
+  ec: [{
+    method: 'two-point',
+    label: 'Two-point · 1,413 µS/cm and 12.88 mS/cm standards',
+    points: [
+      { label: 'Low EC standard (1,413 µS/cm)', unit: 'µS/cm', scaleToMetric: 0.001 },
+      { label: 'High EC standard (12.88 mS/cm)', unit: 'mS/cm' },
+    ],
+  }],
+  turbidity: [
+    { method: 'one-point', label: 'One-point', points: [{ label: 'Turbidity standard' }] },
+    {
+      method: 'two-point',
+      label: 'Two-point · low and high standards',
+      points: [{ label: 'Low turbidity standard' }, { label: 'High turbidity standard' }],
+    },
+  ],
+  do: [
+    { method: 'do-air', label: 'One-point · air calibration', points: [{ label: 'Air-saturated water' }] },
+    {
+      method: 'do-air-zero',
+      label: 'Two-point · air and zero oxygen',
+      points: [{ label: 'Air-saturated water' }, { label: 'Zero-oxygen solution' }],
+    },
+  ],
+};
+
+type CalibrationScreenProps = {
+  deviceName: string | null;
+  deviceId: string | null;
+  reading: PondReading;
+  rawReading: PondReading;
+  voltages: SensorVoltages;
+  voltageUpdatedAt: number | null;
+  isLive: boolean;
+  hasAlert: boolean;
+  calibrations: SensorCalibrations;
+  onSave: (
+    key: CalibratableMetricKey,
+    method: CalibrationMethod,
+    points: CalibrationPoint[],
+  ) => Promise<AuthResult>;
+  onClear: (key: CalibratableMetricKey) => Promise<AuthResult>;
+  onSaveTemperature: (referenceValue: number, measuredValue: number) => Promise<AuthResult>;
+  onClearTemperature: () => Promise<AuthResult>;
+};
+
+const calibrationMetrics: CalibratableMetricKey[] = ['ph', 'tds', 'ec', 'turbidity', 'do'];
+
+const labels: Record<CalibratableMetricKey, string> = {
+  ph: 'pH',
+  tds: 'TDS',
+  ec: 'EC',
+  turbidity: 'Turbidity',
+  do: 'Dissolved oxygen',
+};
+
+export default function CalibrationScreen({
+  deviceName,
+  deviceId,
+  reading,
+  rawReading,
+  voltages,
+  voltageUpdatedAt,
+  isLive,
+  hasAlert,
+  calibrations,
+  onSave,
+  onClear,
+  onSaveTemperature,
+  onClearTemperature,
+}: CalibrationScreenProps) {
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [voltageSamples, setVoltageSamples] = useState<Partial<Record<CalibratableMetricKey, number[]>>>({});
+  const [now, setNow] = useState(Date.now());
+  const [calibrationOpen, setCalibrationOpen] = useState(false);
+  const [method, setMethod] = useState<CalibrationMethod>(calibrationOptions.ph[0].method);
+  const [referenceTexts, setReferenceTexts] = useState<string[]>(calibrationOptions.ph[0].points.map(() => ''));
+  const [capturedPoints, setCapturedPoints] = useState<CalibrationPoint[]>([]);
+  const [currentPointIndex, setCurrentPointIndex] = useState(0);
+  const [calibrationError, setCalibrationError] = useState<string | null>(null);
+  const [calibrationNotice, setCalibrationNotice] = useState<string | null>(null);
+  const [savingCalibration, setSavingCalibration] = useState(false);
+  const [savedInThisSession, setSavedInThisSession] = useState(false);
+  const [temperatureReferenceText, setTemperatureReferenceText] = useState('');
+  const [temperatureError, setTemperatureError] = useState<string | null>(null);
+  const [temperatureNotice, setTemperatureNotice] = useState<string | null>(null);
+  const [savingTemperature, setSavingTemperature] = useState(false);
+  const lastSampleAt = useRef<number | null>(null);
+  const selectedKey = calibrationMetrics[selectedIndex];
+  const metric = metrics.find((candidate) => candidate.key === selectedKey)!;
+  const value = isLive ? reading[selectedKey] : 0;
+  const isOutOfRange = isLive && metric.getSeverity(value) !== null;
+  const status = !isLive ? 'Preview' : isOutOfRange ? 'Needs attention' : 'Normal';
+  const sensorVoltage = voltages[`${selectedKey}Voltage`];
+  const recentVoltageSamples = voltageSamples[selectedKey] ?? [];
+  const voltageRange = recentVoltageSamples.length === 5
+    ? Math.max(...recentVoltageSamples) - Math.min(...recentVoltageSamples)
+    : null;
+  const voltageIsFresh = voltageUpdatedAt !== null && now - voltageUpdatedAt < 15000;
+  const voltageIsStable = sensorVoltage !== undefined &&
+    voltageIsFresh &&
+    voltageRange !== null &&
+    voltageRange <= 0.015;
+  const options = calibrationOptions[selectedKey];
+  const selectedOption = options.find((option) => option.method === method) ?? options[0];
+  const currentPoint = selectedOption.points[currentPointIndex];
+  const currentCalibration = calibrations[selectedKey];
+  const temperatureCalibration = calibrations.temperature;
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (voltageUpdatedAt === null) {
+      lastSampleAt.current = null;
+      setVoltageSamples({});
+      return;
+    }
+    if (lastSampleAt.current === voltageUpdatedAt) return;
+    const samplesExpired = lastSampleAt.current !== null &&
+      voltageUpdatedAt - lastSampleAt.current > 12000;
+    lastSampleAt.current = voltageUpdatedAt;
+    setVoltageSamples((previous) => {
+      const next = samplesExpired ? {} : { ...previous };
+      calibrationMetrics.forEach((key) => {
+        const sample = voltages[`${key}Voltage`];
+        if (sample === undefined || !Number.isFinite(sample)) return;
+        next[key] = [...(samplesExpired ? [] : previous[key] ?? []), sample].slice(-5);
+      });
+      return next;
+    });
+  }, [voltageUpdatedAt, voltages]);
+
+  const resetCalibration = (key: CalibratableMetricKey) => {
+    const option = calibrationOptions[key][0];
+    setMethod(option.method);
+    setReferenceTexts(option.points.map(() => ''));
+    setCapturedPoints([]);
+    setCurrentPointIndex(0);
+    setCalibrationError(null);
+    setCalibrationNotice(null);
+    setSavedInThisSession(false);
+  };
+
+  const selectMethod = (option: CalibrationOption) => {
+    setMethod(option.method);
+    setReferenceTexts(option.points.map(() => ''));
+    setCapturedPoints([]);
+    setCurrentPointIndex(0);
+    setCalibrationError(null);
+    setCalibrationNotice(null);
+    setSavedInThisSession(false);
+  };
+
+  const captureCalibrationPoint = async () => {
+    const referenceText = referenceTexts[currentPointIndex]?.trim() ?? '';
+    const enteredReferenceValue = Number(referenceText.replace(',', '.'));
+    const referenceValue = enteredReferenceValue * (currentPoint.scaleToMetric ?? 1);
+    const measuredValue = rawReading[selectedKey];
+    const zeroReferenceAllowed = selectedOption.points.length === 2 &&
+      ((selectedKey === 'do' && method === 'do-air-zero' && currentPointIndex === 1) ||
+        ((selectedKey === 'tds' || selectedKey === 'turbidity') &&
+          method === 'two-point' && currentPointIndex === 0));
+
+    if (!referenceText || !Number.isFinite(referenceValue)) {
+      setCalibrationError('Enter the value printed on your calibration standard.');
+      return;
+    }
+    if (selectedKey === 'ph' && (referenceValue < 0 || referenceValue > 14)) {
+      setCalibrationError('pH reference values must be between 0 and 14.');
+      return;
+    }
+    if (selectedKey === 'tds' && (referenceValue < 0 || referenceValue > 1000)) {
+      setCalibrationError('TDS references must be between 0 and 1000 ppm.');
+      return;
+    }
+    if (referenceValue < 0 || (referenceValue === 0 && !zeroReferenceAllowed)) {
+      setCalibrationError('This calibration point needs a reference value greater than zero.');
+      return;
+    }
+    if (selectedKey === 'do' && method === 'do-air-zero' &&
+      currentPointIndex === 1 && referenceValue !== 0) {
+      setCalibrationError('The zero-oxygen point must use a 0 mg/L reference.');
+      return;
+    }
+    if (!isLive || !deviceId) {
+      setCalibrationError('Connect a pond with a live sensor before calibrating.');
+      return;
+    }
+    if (!voltageIsStable || sensorVoltage === undefined) {
+      setCalibrationError(voltageIsFresh
+        ? 'Wait until the voltage is stable before capturing this point.'
+        : 'The sensor voltage is unavailable or stale. Check the connection and wait for live voltage updates.');
+      return;
+    }
+    if (!Number.isFinite(measuredValue) || measuredValue < 0 ||
+      (measuredValue === 0 && !(referenceValue === 0 && zeroReferenceAllowed))) {
+      setCalibrationError('This live reading cannot be used for calibration. Check the probe and try again.');
+      return;
+    }
+
+    const nextPoints = [...capturedPoints, { referenceValue, measuredValue, voltage: sensorVoltage }];
+    if (nextPoints.length < selectedOption.points.length) {
+      setCapturedPoints(nextPoints);
+      setCurrentPointIndex(nextPoints.length);
+      setCalibrationError(null);
+      setCalibrationNotice(
+        `Point ${nextPoints.length} captured. Rinse the probe and prepare ${selectedOption.points[nextPoints.length].label.toLowerCase()}.`,
+      );
+      return;
+    }
+    if (nextPoints.length === selectedOption.points.length &&
+      nextPoints.some((point, index) => nextPoints.slice(index + 1).some((otherPoint) =>
+        Math.abs(point.referenceValue - otherPoint.referenceValue) < 0.000001 ||
+        Math.abs(point.measuredValue - otherPoint.measuredValue) < 0.000001))) {
+      setCalibrationError(`${selectedOption.points.length}-point calibration needs distinct reference and sensor readings. Check the standards and try again.`);
+      return;
+    }
+
+    setSavingCalibration(true);
+    setCalibrationError(null);
+    setCalibrationNotice(null);
+    try {
+      const result = await onSave(selectedKey, method, nextPoints);
+      if (!result.success) {
+        setCalibrationError(result.error);
+        return;
+      }
+      setCapturedPoints(nextPoints);
+      setSavedInThisSession(true);
+      setCalibrationNotice(`${labels[selectedKey]} calibration saved for ${deviceName ?? 'this pond'}.`);
+    } catch {
+      setCalibrationError('Could not save the calibration. Check your connection and try again.');
+    } finally {
+      setSavingCalibration(false);
+    }
+  };
+
+  const clearCalibration = () => {
+    Alert.alert(
+      'Remove this app adjustment?',
+      'This removes only the IsdaApp calibration for this pond. Existing firmware calibration is unchanged.',
+      [
+        { text: 'Keep calibration', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            const result = await onClear(selectedKey);
+            if (!result.success) {
+              setCalibrationError(result.error);
+              return;
+            }
+            resetCalibration(selectedKey);
+            setCalibrationNotice('App calibration removed. Firmware calibration is unchanged.');
+          },
+        },
+      ],
+    );
+  };
+
+  const saveTemperatureCalibration = async () => {
+    const referenceText = temperatureReferenceText.trim();
+    const referenceValue = Number(referenceText.replace(',', '.'));
+    const measuredValue = rawReading.temp;
+    if (!referenceText || !Number.isFinite(referenceValue) || referenceValue < -55 || referenceValue > 125) {
+      setTemperatureError('Enter a thermometer reading between -55 and 125 °C.');
+      return;
+    }
+    if (!isLive || !deviceId) {
+      setTemperatureError('Connect a pond with a live temperature reading before calibrating.');
+      return;
+    }
+    if (!Number.isFinite(measuredValue) || measuredValue < -55 || measuredValue > 125) {
+      setTemperatureError('The live temperature reading is invalid. Check the probe and try again.');
+      return;
+    }
+
+    setSavingTemperature(true);
+    setTemperatureError(null);
+    setTemperatureNotice(null);
+    try {
+      const result = await onSaveTemperature(referenceValue, measuredValue);
+      if (!result.success) {
+        setTemperatureError(result.error);
+        return;
+      }
+      const offset = referenceValue - measuredValue;
+      setTemperatureNotice(
+        `Temperature calibration saved. App correction: ${offset >= 0 ? '+' : ''}${offset.toFixed(2)} °C.`,
+      );
+    } catch {
+      setTemperatureError('Could not save the temperature calibration. Check your connection and try again.');
+    } finally {
+      setSavingTemperature(false);
+    }
+  };
+
+  const clearTemperatureCalibration = () => {
+    Alert.alert(
+      'Remove temperature calibration?',
+      'This removes the IsdaApp temperature correction for this pond. The firmware calibration is unchanged.',
+      [
+        { text: 'Keep calibration', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            const result = await onClearTemperature();
+            if (!result.success) {
+              setTemperatureError(result.error);
+              return;
+            }
+            setTemperatureReferenceText('');
+            setTemperatureError(null);
+            setTemperatureNotice('Temperature correction removed. Firmware calibration is unchanged.');
+          },
+        },
+      ],
+    );
+  };
+
+  const methodInstructions = selectedKey === 'ph'
+    ? method === 'three-point'
+      ? 'Use pH 4, pH 7, and pH 10 buffers in order. Enter each buffer’s value for its stated temperature and rinse the probe between buffers.'
+      : 'Use pH 7 first, then pH 4 or pH 10. Enter each buffer’s value for its stated temperature and rinse the probe between buffers.'
+    : selectedKey === 'ec'
+      ? 'Use the value for each standard at its current temperature, if specified by its manufacturer. Rinse the probe between standards.'
+      : selectedKey === 'do'
+        ? method === 'do-air-zero'
+          ? 'For the air point, enter the value corrected for current water temperature, salinity, and altitude. Then rinse and capture the zero-oxygen solution.'
+          : 'Prepare air-saturated water and enter its temperature-, salinity-, and altitude-corrected value.'
+        : method === 'two-point'
+          ? 'Use distinct low and high certified standards. Rinse the probe between standards.'
+          : 'Use a fresh certified standard and enter the exact value from its label.';
+
+  return (
+    <View style={screenStyles.root}>
+      <ScrollView contentContainerStyle={screenStyles.content}>
+        <View style={screenStyles.deviceHeader}>
+          <View style={screenStyles.deviceTitle}>
+            <Text numberOfLines={1} style={screenStyles.deviceName}>{deviceName ?? 'Home Test 1'}</Text>
+            <View style={[screenStyles.statusBadge, isLive ? screenStyles.liveBadge : screenStyles.previewBadge]}>
+              <View style={[screenStyles.statusDot, isLive ? screenStyles.liveDot : screenStyles.previewDot]} />
+              <Text style={screenStyles.deviceStatus}>{!isLive ? 'PREVIEW' : hasAlert ? 'NEEDS REVIEW' : 'LIVE'}</Text>
+            </View>
+          </View>
+        </View>
+
+        <Text style={screenStyles.eyebrow}>SENSOR TOOLS</Text>
+        <Text style={screenStyles.pageTitle}>Calibration</Text>
+        <Text style={screenStyles.intro}>Choose a sensor, check its live reading, then calibrate against a trusted reference.</Text>
+        <Text style={screenStyles.sectionTitle}>Current reading</Text>
+        <Pressable
+          onPress={() => {
+            const nextIndex = (selectedIndex + 1) % calibrationMetrics.length;
+            setSelectedIndex(nextIndex);
+            setCalibrationOpen(false);
+            resetCalibration(calibrationMetrics[nextIndex]);
+          }}
+          style={[screenStyles.readingCircle, isOutOfRange && screenStyles.readingCircleAlert]}
+          accessibilityRole="button"
+          accessibilityLabel={`${labels[selectedKey]} ${formatValue(value, selectedKey)} ${metric.unit}. Water temperature ${isLive ? `${formatValue(reading.temp, 'temp')} degrees Celsius` : 'unavailable'}. Sensor voltage ${sensorVoltage === undefined ? 'unavailable' : `${sensorVoltage.toFixed(3)} volts`}, ${voltageIsStable ? 'stable' : 'not stable'}. Tap for next sensor.`}
+        >
+          <Text style={screenStyles.metricName}>{labels[selectedKey]}</Text>
+          <Text style={[screenStyles.readingStatus, isOutOfRange && screenStyles.alertText]}>{status}</Text>
+          <Text style={screenStyles.readingValue}>{formatValue(value, selectedKey)}</Text>
+          <Text style={screenStyles.readingUnit}>{metric.unit}</Text>
+          <Text style={screenStyles.temperatureValue}>
+            Water temperature {isLive ? `${formatValue(reading.temp, 'temp')} °C` : '—'}
+          </Text>
+          <Text style={screenStyles.voltageValue}>
+            Voltage {sensorVoltage === undefined ? '—' : `${sensorVoltage.toFixed(3)} V`}
+          </Text>
+          <Text style={[
+            screenStyles.voltageHint,
+            voltageIsStable && screenStyles.voltageHintStable,
+            voltageUpdatedAt !== null && !voltageIsFresh && screenStyles.voltageHintStale,
+          ]}>
+            {sensorVoltage === undefined
+              ? 'Voltage unavailable'
+              : !voltageIsFresh
+                ? 'Voltage is stale'
+                : voltageIsStable
+                    ? `STABLE · range ${voltageRange?.toFixed(3)} V (limit 0.015 V)`
+                    : `STABILIZING · ${recentVoltageSamples.length}/5 samples${voltageRange === null ? '' : ` · range ${voltageRange.toFixed(3)} V`}`}
+          </Text>
+        </Pressable>
+        <Text style={screenStyles.sensorHint}>Tap the circle to view the next sensor</Text>
+
+        <View style={screenStyles.calibrationCard}>
+          <View style={screenStyles.calibrationHeader}>
+            <View style={screenStyles.calibrationHeading}>
+              <Text style={screenStyles.calibrationEyebrow}>ONE-POINT OFFSET</Text>
+              <Text style={screenStyles.calibrationTitle}>Temperature</Text>
+            </View>
+            <View style={screenStyles.liveReadingBadge}>
+              <Text style={screenStyles.liveReadingCaption}>PROBE READING</Text>
+              <Text style={screenStyles.liveReadingValue}>
+                {isLive ? `${formatValue(rawReading.temp, 'temp')} °C` : '—'}
+              </Text>
+            </View>
+          </View>
+          <Text style={screenStyles.calibrationCopy}>
+            Place a trusted thermometer beside the probe in the same water. Wait for both readings to settle, then enter the thermometer value.
+          </Text>
+          {temperatureCalibration ? (
+            <View style={screenStyles.savedCalibrationRow}>
+              <Text style={screenStyles.savedCalibration}>
+                Saved correction {temperatureCalibration.offset >= 0 ? '+' : ''}{temperatureCalibration.offset.toFixed(2)} °C · {new Date(temperatureCalibration.calibratedAt).toLocaleDateString()}
+              </Text>
+              <Pressable
+                onPress={clearTemperatureCalibration}
+                accessibilityRole="button"
+                style={({ pressed }) => [screenStyles.removeButton, pressed && screenStyles.pressed]}
+              >
+                <Text style={screenStyles.removeButtonText}>Remove</Text>
+              </Pressable>
+            </View>
+          ) : null}
+          <Text style={screenStyles.inputLabel}>TRUSTED THERMOMETER VALUE</Text>
+          <View style={screenStyles.inputRow}>
+            <TextInput
+              value={temperatureReferenceText}
+              onChangeText={(text) => {
+                setTemperatureReferenceText(text);
+                setTemperatureError(null);
+                setTemperatureNotice(null);
+              }}
+              placeholder="Enter reference temperature"
+              placeholderTextColor="#8A9BA0"
+              keyboardType="decimal-pad"
+              style={screenStyles.input}
+              accessibilityLabel="Trusted thermometer temperature in degrees Celsius"
+            />
+            <View style={screenStyles.inputUnitBadge}>
+              <Text style={screenStyles.inputUnit}>°C</Text>
+            </View>
+          </View>
+          {temperatureError ? (
+            <Text style={screenStyles.errorText} accessibilityRole="alert">{temperatureError}</Text>
+          ) : null}
+          {temperatureNotice ? (
+            <Text style={screenStyles.noticeText} accessibilityRole="alert">{temperatureNotice}</Text>
+          ) : null}
+          <Pressable
+            onPress={saveTemperatureCalibration}
+            disabled={savingTemperature || !isLive || !deviceId}
+            style={({ pressed }) => [
+              screenStyles.captureButton,
+              (!isLive || !deviceId || savingTemperature) && screenStyles.captureButtonDisabled,
+              pressed && screenStyles.pressed,
+            ]}
+            accessibilityRole="button"
+          >
+            <Text style={screenStyles.actionText}>
+              {savingTemperature ? 'SAVING CALIBRATION…' : 'SAVE TEMPERATURE CALIBRATION'}
+            </Text>
+          </Pressable>
+          {!isLive || !deviceId ? (
+            <Text style={screenStyles.captureHint}>A live connected temperature sensor is required.</Text>
+          ) : null}
+        </View>
+
+        <Pressable
+          onPress={() => {
+            setCalibrationOpen((open) => !open);
+            setCalibrationError(null);
+            setCalibrationNotice(null);
+          }}
+          style={({ pressed }) => [screenStyles.actionButton, pressed && screenStyles.pressed]}
+          accessibilityRole="button"
+        >
+          <Text style={screenStyles.actionText}>
+            {calibrationOpen ? 'CLOSE CALIBRATION' : `CALIBRATE ${labels[selectedKey].toUpperCase()}`}
+          </Text>
+        </Pressable>
+        {!calibrationOpen ? (
+          <Text style={screenStyles.helperText}>Starts calibration controls here on this screen.</Text>
+        ) : (
+          <View style={screenStyles.calibrationCard}>
+            <View style={screenStyles.calibrationHeader}>
+              <View style={screenStyles.calibrationHeading}>
+                <Text style={screenStyles.calibrationEyebrow}>CALIBRATION SETUP</Text>
+                <Text style={screenStyles.calibrationTitle}>{labels[selectedKey]}</Text>
+              </View>
+              <View style={screenStyles.liveReadingBadge}>
+                <Text style={screenStyles.liveReadingCaption}>LIVE READING</Text>
+                <Text style={screenStyles.liveReadingValue}>
+                  {formatValue(rawReading[selectedKey], selectedKey)} {metric.unit}
+                </Text>
+              </View>
+            </View>
+            {currentCalibration ? (
+              <View style={screenStyles.savedCalibrationRow}>
+                <Text style={screenStyles.savedCalibration}>
+                  Existing {currentCalibration.method ?? 'one-point'} calibration · {new Date(currentCalibration.calibratedAt).toLocaleDateString()}
+                </Text>
+                <Pressable
+                  onPress={clearCalibration}
+                  accessibilityRole="button"
+                  style={({ pressed }) => [screenStyles.removeButton, pressed && screenStyles.pressed]}
+                >
+                  <Text style={screenStyles.removeButtonText}>Remove</Text>
+                </Pressable>
+              </View>
+            ) : null}
+            {options.length > 1 ? (
+              <View style={screenStyles.methodList}>
+                {options.map((option) => (
+                  <Pressable
+                    key={option.method}
+                    onPress={() => selectMethod(option)}
+                    style={[screenStyles.methodOption, method === option.method && screenStyles.methodOptionSelected]}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: method === option.method }}
+                  >
+                    <Text style={[screenStyles.methodText, method === option.method && screenStyles.methodTextSelected]}>
+                      {option.label}
+                    </Text>
+                    <View style={[
+                      screenStyles.methodCheck,
+                      method === option.method && screenStyles.methodCheckSelected,
+                    ]}>
+                      {method === option.method ? <Text style={screenStyles.methodCheckText}>✓</Text> : null}
+                    </View>
+                  </Pressable>
+                ))}
+              </View>
+            ) : (
+              <View style={screenStyles.methodSummary}>
+                <Text style={screenStyles.methodSummaryLabel}>SELECTED METHOD</Text>
+                <Text style={screenStyles.methodSummaryText}>{selectedOption.label}</Text>
+              </View>
+            )}
+            <View style={screenStyles.progressTrack} accessibilityRole="progressbar"
+              accessibilityValue={{ min: 0, max: selectedOption.points.length, now: savedInThisSession ? selectedOption.points.length : currentPointIndex }}>
+              {selectedOption.points.map((point, index) => {
+                const isComplete = savedInThisSession || index < currentPointIndex;
+                const isCurrent = !savedInThisSession && index === currentPointIndex;
+                return (
+                  <View key={`progress-${index}`} style={screenStyles.progressItem}>
+                    <View style={[
+                      screenStyles.progressMarker,
+                      isComplete && screenStyles.progressMarkerComplete,
+                      isCurrent && screenStyles.progressMarkerCurrent,
+                    ]}>
+                      <Text style={[
+                        screenStyles.progressMarkerText,
+                        (isComplete || isCurrent) && screenStyles.progressMarkerTextActive,
+                      ]}>{isComplete ? '✓' : index + 1}</Text>
+                    </View>
+                    <Text style={[
+                      screenStyles.progressLabel,
+                      isCurrent && screenStyles.progressLabelCurrent,
+                    ]}>{point.label.replace(/\s*\([^)]*\)/g, '')}</Text>
+                  </View>
+                );
+              })}
+            </View>
+            <Text style={screenStyles.pointLabel}>
+              {savedInThisSession ? 'Calibration complete' : `Step ${currentPointIndex + 1} of ${selectedOption.points.length}`}
+            </Text>
+            <Text style={screenStyles.currentPointTitle}>{currentPoint.label}</Text>
+            <Text style={screenStyles.calibrationCopy}>{methodInstructions}</Text>
+            {!savedInThisSession ? (
+              <>
+                <Text style={screenStyles.inputLabel}>STANDARD VALUE</Text>
+                <View style={screenStyles.inputRow}>
+                  <TextInput
+                    value={referenceTexts[currentPointIndex] ?? ''}
+                    onChangeText={(text) => {
+                      setReferenceTexts((previous) => previous.map((item, index) =>
+                        index === currentPointIndex ? text : item));
+                      setCalibrationError(null);
+                      setCalibrationNotice(null);
+                    }}
+                    placeholder={selectedKey === 'do' && currentPoint.label === 'Air-saturated water'
+                      ? 'Enter temp-corrected value'
+                      : 'Enter value from standard'}
+                    placeholderTextColor="#8A9BA0"
+                    keyboardType="decimal-pad"
+                    style={screenStyles.input}
+                    accessibilityLabel={`${labels[selectedKey]} ${currentPoint.label} reference in ${currentPoint.unit ?? metric.unit}`}
+                  />
+                  <View style={screenStyles.inputUnitBadge}>
+                    <Text style={screenStyles.inputUnit}>{currentPoint.unit ?? metric.unit}</Text>
+                  </View>
+                </View>
+              </>
+            ) : null}
+            <View style={[
+              screenStyles.voltageStatusCard,
+              voltageIsStable && screenStyles.voltageStatusStable,
+              !voltageIsFresh && screenStyles.voltageStatusWaiting,
+            ]}>
+              <View style={[
+                screenStyles.voltageStatusDot,
+                voltageIsStable && screenStyles.voltageStatusDotStable,
+                !voltageIsFresh && screenStyles.voltageStatusDotWaiting,
+              ]} />
+              <View style={screenStyles.voltageStatusBody}>
+                <Text style={[
+                  screenStyles.voltageStatusTitle,
+                  voltageIsStable && screenStyles.voltageStatusTitleStable,
+                ]}>
+                  {voltageIsStable ? 'Voltage is stable' : voltageIsFresh ? 'Stabilizing sensor' : 'Waiting for live voltage'}
+                </Text>
+                <Text style={screenStyles.voltageStatusCopy}>
+                  {!voltageIsFresh
+                    ? 'Connect the sensor and wait for fresh voltage samples.'
+                    : voltageIsStable
+                      ? `Ready to capture at ${sensorVoltage?.toFixed(3)} V.`
+                      : `Keep the probe still · ${recentVoltageSamples.length}/5 samples${voltageRange === null ? '' : ` · range ${voltageRange.toFixed(3)} V`}.`}
+                </Text>
+              </View>
+            </View>
+            {capturedPoints.map((point, index) => (
+              <View key={`${selectedKey}-point-${index}`} style={screenStyles.capturedPoint}>
+                <Text style={screenStyles.capturedPointCheck}>✓</Text>
+                <View style={screenStyles.capturedPointBody}>
+                  <Text style={screenStyles.capturedPointTitle}>Point {index + 1} captured</Text>
+                  <Text style={screenStyles.capturedPointCopy}>
+                    Reference {point.referenceValue / (selectedOption.points[index].scaleToMetric ?? 1)} {selectedOption.points[index].unit ?? metric.unit}
+                    {'  ·  '}Reading {formatValue(point.measuredValue, selectedKey)} {metric.unit}
+                    {'  ·  '}{point.voltage.toFixed(3)} V
+                  </Text>
+                </View>
+              </View>
+            ))}
+            {calibrationError ? (
+              <Text style={screenStyles.errorText} accessibilityRole="alert">{calibrationError}</Text>
+            ) : null}
+            {calibrationNotice ? (
+              <Text style={screenStyles.noticeText} accessibilityRole="alert">{calibrationNotice}</Text>
+            ) : null}
+            <Pressable
+              onPress={captureCalibrationPoint}
+              disabled={savingCalibration || savedInThisSession || !isLive || !deviceId || !voltageIsStable}
+              style={({ pressed }) => [
+                screenStyles.captureButton,
+                (!isLive || !deviceId || !voltageIsStable || savingCalibration || savedInThisSession) && screenStyles.captureButtonDisabled,
+                pressed && screenStyles.pressed,
+              ]}
+              accessibilityRole="button"
+            >
+              <Text style={screenStyles.actionText}>
+                {savingCalibration
+                  ? 'SAVING CALIBRATION…'
+                  : savedInThisSession
+                    ? 'CALIBRATION SAVED ✓'
+                    : currentPointIndex < selectedOption.points.length - 1
+                      ? `CAPTURE POINT ${currentPointIndex + 1}`
+                      : 'CAPTURE POINT & SAVE'}
+              </Text>
+            </Pressable>
+            {!savedInThisSession ? (
+              <Text style={screenStyles.captureHint}>
+                {!isLive || !deviceId
+                  ? 'A live connected sensor is required.'
+                  : !voltageIsStable
+                    ? 'Capture becomes available when the voltage is stable.'
+                    : currentPointIndex < selectedOption.points.length - 1
+                      ? 'The next standard will be requested after this point.'
+                      : 'Your correction is saved after this final point.'}
+              </Text>
+            ) : null}
+          </View>
+        )}
+      </ScrollView>
+    </View>
+  );
+}
+
+const screenStyles = StyleSheet.create({
+  root: { backgroundColor: '#F5F8FA', flex: 1 },
+  deviceHeader: {
+    alignSelf: 'stretch',
+    alignItems: 'center',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  deviceTitle: { alignItems: 'flex-start', flex: 1 },
+  deviceName: { color: '#172B33', fontSize: 23, fontWeight: '800' },
+  statusBadge: { alignItems: 'center', borderRadius: 20, flexDirection: 'row', gap: 7, marginTop: 7, paddingHorizontal: 12, paddingVertical: 8 },
+  liveBadge: { backgroundColor: '#DDE7EB' },
+  previewBadge: { backgroundColor: '#DDE7EB' },
+  statusDot: { borderRadius: 5, height: 9, width: 9 },
+  liveDot: { backgroundColor: '#078A95' },
+  previewDot: { backgroundColor: '#A87500' },
+  deviceStatus: { color: '#334B53', fontSize: 11, fontWeight: '800', letterSpacing: 1 },
+  content: {
+    alignItems: 'center',
+    flexGrow: 1,
+    paddingBottom: 24,
+    paddingHorizontal: 22,
+    paddingTop: (StatusBar.currentHeight ?? 0) + 14,
+  },
+  eyebrow: { alignSelf: 'stretch', color: '#60777E', fontSize: 11, fontWeight: '700', letterSpacing: 1.5, marginTop: 10 },
+  pageTitle: { alignSelf: 'stretch', color: '#172B33', fontSize: 32, fontWeight: '800', marginTop: 5 },
+  intro: { alignSelf: 'stretch', color: '#60777E', fontSize: 14, lineHeight: 21, marginTop: 8 },
+  sectionTitle: { alignSelf: 'stretch', color: '#172B33', fontSize: 19, fontWeight: '800', marginBottom: 12, marginTop: 18 },
+  readingCircle: {
+    alignItems: 'center',
+    aspectRatio: 1,
+    backgroundColor: '#FFFFFF',
+    borderColor: '#078A95',
+    borderRadius: 999,
+    borderWidth: 6,
+    elevation: 3,
+    justifyContent: 'flex-start',
+    maxHeight: 400,
+    maxWidth: 400,
+    paddingBottom: 14,
+    paddingTop: '8%',
+    shadowColor: '#102F36',
+    shadowOffset: { height: 5, width: 0 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    width: '96%',
+  },
+  readingCircleAlert: { borderColor: '#C84F5B' },
+  metricName: { color: '#172B33', fontSize: 30, fontWeight: '700', marginTop: '2%' },
+  readingStatus: { color: '#60777E', fontSize: 16, fontWeight: '500', marginTop: 1 },
+  alertText: { color: '#9D3944' },
+  readingValue: { color: '#153D46', fontSize: 66, fontWeight: '700', marginTop: '5%' },
+  readingUnit: { color: '#60777E', fontSize: 19, fontWeight: '500', marginTop: '1%' },
+  temperatureValue: { color: '#49656D', fontSize: 12, fontWeight: '700', marginTop: 8 },
+  voltageValue: { color: '#49656D', fontSize: 15, fontWeight: '700', marginTop: 'auto' },
+  voltageHint: { color: '#A87500', fontSize: 9, fontWeight: '900', letterSpacing: 0.2, marginTop: 3 },
+  voltageHintStable: { color: '#14734E' },
+  voltageHintStale: { color: '#9D3944' },
+  sensorHint: { color: '#60777E', fontSize: 12, marginBottom: 13, marginTop: 9 },
+  actionButton: {
+    alignItems: 'center',
+    backgroundColor: '#173C45',
+    borderRadius: 15,
+    elevation: 3,
+    justifyContent: 'center',
+    minHeight: 54,
+    shadowColor: '#102F36',
+    shadowOffset: { height: 4, width: 0 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    width: '100%',
+  },
+  actionText: { color: '#FFFFFF', fontSize: 17, fontWeight: '800', letterSpacing: 0.8, textAlign: 'center' },
+  helperText: { color: '#60777E', fontSize: 11, lineHeight: 16, marginTop: 11, textAlign: 'center' },
+  calibrationCard: {
+    alignSelf: 'stretch',
+    backgroundColor: '#FFFFFF',
+    borderColor: '#E1E9EC',
+    borderRadius: 22,
+    borderWidth: 1,
+    elevation: 2,
+    marginTop: 14,
+    padding: 18,
+    shadowColor: '#102F36',
+    shadowOffset: { height: 4, width: 0 },
+    shadowOpacity: 0.06,
+    shadowRadius: 12,
+  },
+  calibrationHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
+  calibrationHeading: { flex: 1, paddingRight: 8 },
+  calibrationEyebrow: { color: '#078A95', fontSize: 9, fontWeight: '900', letterSpacing: 1.2 },
+  calibrationTitle: { color: '#172B33', fontSize: 23, fontWeight: '800', marginTop: 3 },
+  liveReadingBadge: {
+    alignItems: 'flex-end',
+    backgroundColor: '#F1F6F7',
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  liveReadingCaption: { color: '#71858B', fontSize: 8, fontWeight: '800', letterSpacing: 0.6 },
+  liveReadingValue: { color: '#153D46', fontSize: 13, fontWeight: '800', marginTop: 3 },
+  calibrationCopy: { color: '#60777E', fontSize: 12, lineHeight: 17, marginTop: 5 },
+  savedCalibrationRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 },
+  savedCalibration: { color: '#176A50', flex: 1, fontSize: 11, fontWeight: '700' },
+  removeButton: { paddingHorizontal: 8, paddingVertical: 5 },
+  removeButtonText: { color: '#A83E49', fontSize: 11, fontWeight: '800' },
+  methodList: { gap: 7, marginTop: 12 },
+  methodOption: {
+    alignItems: 'center',
+    backgroundColor: '#F5F8FA',
+    borderColor: '#DDE7EB',
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 11,
+    paddingVertical: 11,
+  },
+  methodOptionSelected: { backgroundColor: '#EFF8F3', borderColor: '#078A95' },
+  methodText: { color: '#49656D', flex: 1, fontSize: 12, fontWeight: '700', lineHeight: 17 },
+  methodTextSelected: { color: '#153D46' },
+  methodCheck: { alignItems: 'center', borderColor: '#C9D8DC', borderRadius: 10, borderWidth: 1, height: 20, justifyContent: 'center', width: 20 },
+  methodCheckSelected: { backgroundColor: '#078A95', borderColor: '#078A95' },
+  methodCheckText: { color: '#FFFFFF', fontSize: 12, fontWeight: '900' },
+  methodSummary: { backgroundColor: '#F5F8FA', borderRadius: 12, marginTop: 11, padding: 11 },
+  methodSummaryLabel: { color: '#71858B', fontSize: 8, fontWeight: '900', letterSpacing: 0.8 },
+  methodSummaryText: { color: '#334B53', fontSize: 11, fontWeight: '700', lineHeight: 16, marginTop: 4 },
+  progressTrack: { flexDirection: 'row', gap: 8, marginTop: 18 },
+  progressItem: { alignItems: 'center', flex: 1 },
+  progressMarker: {
+    alignItems: 'center',
+    backgroundColor: '#F1F5F6',
+    borderColor: '#DDE7EB',
+    borderRadius: 16,
+    borderWidth: 1,
+    height: 32,
+    justifyContent: 'center',
+    width: 32,
+  },
+  progressMarkerComplete: { backgroundColor: '#E8F5EF', borderColor: '#A8D7C2' },
+  progressMarkerCurrent: { backgroundColor: '#087F8C', borderColor: '#087F8C' },
+  progressMarkerText: { color: '#71858B', fontSize: 12, fontWeight: '800' },
+  progressMarkerTextActive: { color: '#FFFFFF' },
+  progressLabel: { color: '#84969B', fontSize: 9, fontWeight: '600', lineHeight: 13, marginTop: 6, textAlign: 'center' },
+  progressLabelCurrent: { color: '#153D46', fontWeight: '800' },
+  pointLabel: { color: '#078A95', fontSize: 10, fontWeight: '900', letterSpacing: 0.8, marginTop: 18 },
+  currentPointTitle: { color: '#172B33', fontSize: 17, fontWeight: '800', marginTop: 3 },
+  inputRow: {
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderColor: '#C9D8DC',
+    borderRadius: 14,
+    borderWidth: 1.5,
+    flexDirection: 'row',
+    marginTop: 6,
+    minHeight: 58,
+    paddingHorizontal: 14,
+  },
+  inputLabel: { color: '#49656D', fontSize: 9, fontWeight: '900', letterSpacing: 0.9, marginTop: 15 },
+  input: { color: '#172B33', flex: 1, fontSize: 20, fontWeight: '700', paddingVertical: 12 },
+  inputUnitBadge: { backgroundColor: '#EAF1F3', borderRadius: 9, paddingHorizontal: 10, paddingVertical: 7 },
+  inputUnit: { color: '#334B53', fontSize: 12, fontWeight: '800' },
+  voltageStatusCard: {
+    alignItems: 'flex-start',
+    backgroundColor: '#FFF8E8',
+    borderColor: '#F1DFB6',
+    borderRadius: 13,
+    borderWidth: 1,
+    flexDirection: 'row',
+    marginTop: 14,
+    padding: 11,
+  },
+  voltageStatusStable: { backgroundColor: '#EFF8F3', borderColor: '#C7E5D4' },
+  voltageStatusWaiting: { backgroundColor: '#F5F7F8', borderColor: '#E0E7E9' },
+  voltageStatusDot: { backgroundColor: '#B77B08', borderRadius: 5, height: 9, marginRight: 9, marginTop: 3, width: 9 },
+  voltageStatusDotStable: { backgroundColor: '#16805B' },
+  voltageStatusDotWaiting: { backgroundColor: '#819398' },
+  voltageStatusBody: { flex: 1 },
+  voltageStatusTitle: { color: '#805909', fontSize: 11, fontWeight: '800' },
+  voltageStatusTitleStable: { color: '#176A50' },
+  voltageStatusCopy: { color: '#60777E', fontSize: 10, lineHeight: 15, marginTop: 3 },
+  capturedPoint: {
+    alignItems: 'flex-start',
+    backgroundColor: '#F0F8F3',
+    borderColor: '#D4EBDD',
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: 'row',
+    marginTop: 10,
+    padding: 10,
+  },
+  capturedPointCheck: { color: '#16805B', fontSize: 15, fontWeight: '900', marginRight: 8 },
+  capturedPointBody: { flex: 1 },
+  capturedPointTitle: { color: '#176A50', fontSize: 11, fontWeight: '800' },
+  capturedPointCopy: { color: '#49656D', fontSize: 9, lineHeight: 14, marginTop: 3 },
+  errorText: { color: '#A83E49', fontSize: 12, lineHeight: 17, marginTop: 10 },
+  noticeText: { color: '#176A50', fontSize: 12, lineHeight: 17, marginTop: 10 },
+  captureButton: {
+    alignItems: 'center',
+    backgroundColor: '#087F8C',
+    borderRadius: 13,
+    justifyContent: 'center',
+    marginTop: 13,
+    minHeight: 48,
+    paddingHorizontal: 12,
+  },
+  captureButtonDisabled: { backgroundColor: '#9BAEB2' },
+  captureHint: { color: '#71858B', fontSize: 10, lineHeight: 15, marginTop: 8, textAlign: 'center' },
+  pressed: { opacity: 0.65 },
+});

@@ -1,5 +1,8 @@
 import { getApp, getApps, initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
+// Firebase resolves this RN-only export from its React Native entrypoint.
+// @ts-expect-error The shared Firebase Auth declarations omit the RN-specific export.
+import { getReactNativePersistence, getAuth, initializeAuth } from 'firebase/auth';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getDatabase } from 'firebase/database';
 
 const firebaseConfig = {
@@ -18,5 +21,23 @@ export const GOOGLE_WEB_CLIENT_ID =
 
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
-export const auth = getAuth(app);
+let auth: ReturnType<typeof getAuth>;
+try {
+  auth = initializeAuth(app, {
+    persistence: getReactNativePersistence(AsyncStorage),
+  });
+} catch (error) {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'auth/already-initialized'
+  ) {
+    auth = getAuth(app);
+  } else {
+    throw error;
+  }
+}
+
+export { auth };
 export const db = getDatabase(app);

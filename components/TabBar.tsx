@@ -56,6 +56,28 @@ export default function TabBar({ activeTab, onChangeTab, hasAlert }: TabBarProps
         onPress={() => onChangeTab('alert')}
         badge={hasAlert}
       />
+      <Pressable
+        onPress={() => onChangeTab('calibration')}
+        style={({ pressed }) => [styles.tabCalibrationButton, pressed && styles.tabButtonPressed]}
+        accessibilityRole="tab"
+        accessibilityState={{ selected: activeTab === 'calibration' }}
+        accessibilityLabel="Calibrate sensors"
+      >
+        <View style={[styles.tabIcon, activeTab === 'calibration' && styles.tabIconActive]}>
+          <Image
+            source={require('../assets/tab-calibration.png')}
+            style={styles.tabImage}
+            resizeMode="contain"
+            accessibilityLabel="Calibration instrument icon"
+          />
+        </View>
+        <Text style={[
+          styles.tabLabel,
+          activeTab === 'calibration' && styles.tabLabelActive,
+        ]}>
+          Calibrate
+        </Text>
+      </Pressable>
       <TabButton
         label="History"
         image={require('../assets/tab-history.png')}
