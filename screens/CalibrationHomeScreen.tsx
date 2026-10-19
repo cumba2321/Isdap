@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Modal, Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { formatValue, metrics } from '../metrics';
 import {
   AuthResult,
@@ -85,6 +86,7 @@ type CalibrationScreenProps = {
 };
 
 const calibrationMetrics: CalibratableMetricKey[] = ['ph', 'tds', 'ec', 'turbidity', 'do'];
+const maxMonitorLines = 500;
 
 const labels: Record<CalibratableMetricKey, string> = {
   ph: 'pH',
@@ -110,6 +112,9 @@ export default function CalibrationScreen({
   onClearTemperature,
 }: CalibrationScreenProps) {
   const [selectedIndex, setSelectedIndex] = useState(calibrationMetrics.length);
+  const [serialMonitorOpen, setSerialMonitorOpen] = useState(false);
+  const [serialMonitorLines, setSerialMonitorLines] = useState<string[]>([]);
+  const [serialMonitorNotice, setSerialMonitorNotice] = useState<string | null>(null);
   const [voltageSamples, setVoltageSamples] = useState<Partial<Record<CalibratableMetricKey, number[]>>>({});
   const [now, setNow] = useState(Date.now());
   const [calibrationOpen, setCalibrationOpen] = useState(false);
@@ -126,6 +131,7 @@ export default function CalibrationScreen({
   const [temperatureNotice, setTemperatureNotice] = useState<string | null>(null);
   const [savingTemperature, setSavingTemperature] = useState(false);
   const lastSampleAt = useRef<number | null>(null);
+  const lastMonitorSampleAt = useRef<number | null>(null);
   const showingTemperature = selectedIndex === calibrationMetrics.length;
   const selectedKey = calibrationMetrics[selectedIndex % calibrationMetrics.length];
   const metric = metrics.find((candidate) => candidate.key === selectedKey)!;
@@ -177,6 +183,33 @@ export default function CalibrationScreen({
       return next;
     });
   }, [voltageUpdatedAt, voltages]);
+
+  useEffect(() => {
+    if (!serialMonitorOpen || !isLive || voltageUpdatedAt === null) return;
+    if (lastMonitorSampleAt.current === voltageUpdatedAt) return;
+
+    lastMonitorSampleAt.current = voltageUpdatedAt;
+    const timestamp = new Date(voltageUpdatedAt).toLocaleString();
+    const line = `[${timestamp}] RX /live_data temp=${formatValue(rawReading.temp, 'temp')} C | pH=${formatValue(rawReading.ph, 'ph')} | DO=${formatValue(rawReading.do, 'do')} mg/L | EC=${formatValue(rawReading.ec, 'ec')} mS/cm | TDS=${formatValue(rawReading.tds, 'tds')} ppm | NTU=${formatValue(rawReading.turbidity, 'turbidity')}`;
+    setSerialMonitorLines((previous) => [...previous, line].slice(-maxMonitorLines));
+  }, [isLive, rawReading, serialMonitorOpen, voltageUpdatedAt]);
+
+  const closeSerialMonitor = () => {
+    setSerialMonitorOpen(false);
+    setSerialMonitorLines([]);
+    setSerialMonitorNotice(null);
+    lastMonitorSampleAt.current = null;
+  };
+
+  const copySerialMonitor = async () => {
+    if (serialMonitorLines.length === 0) return;
+    try {
+      await Clipboard.setStringAsync(serialMonitorLines.join('\n'));
+      setSerialMonitorNotice('Monitor data copied to the clipboard.');
+    } catch {
+      Alert.alert('Copy failed', 'Could not copy the monitor data. Please try again.');
+    }
+  };
 
   const resetCalibration = (key: CalibratableMetricKey) => {
     const option = calibrationOptions[key][0];
@@ -397,6 +430,92 @@ export default function CalibrationScreen({
         <Text style={screenStyles.eyebrow}>SENSOR TOOLS</Text>
         <Text style={screenStyles.pageTitle}>Calibration</Text>
         <Text style={screenStyles.intro}>Choose a sensor, check its live reading, then calibrate against a trusted reference.</Text>
+        {!serialMonitorOpen ? (
+          <Pressable
+            onPress={() => {
+              lastMonitorSampleAt.current = null;
+              setSerialMonitorNotice(null);
+              setSerialMonitorOpen(true);
+            }}
+            style={({ pressed }) => [screenStyles.monitorToggle, pressed && screenStyles.pressed]}
+            accessibilityRole="button"
+          >
+            <Text style={screenStyles.monitorToggleText}>OPEN SERIAL MONITOR</Text>
+          </Pressable>
+        ) : null}
+        <Modal
+          animationType="slide"
+          onRequestClose={closeSerialMonitor}
+          presentationStyle="fullScreen"
+          statusBarTranslucent
+          visible={serialMonitorOpen}
+        >
+          <View style={screenStyles.monitorScreen}>
+            <StatusBar barStyle="light-content" backgroundColor="#102127" />
+            <View style={screenStyles.monitorHeader}>
+              <View style={screenStyles.monitorTitleGroup}>
+                <View style={[screenStyles.monitorDot, isLive && screenStyles.monitorDotLive]} />
+                <Text style={screenStyles.monitorTitle}>Serial Monitor</Text>
+              </View>
+              <Pressable
+                onPress={closeSerialMonitor}
+                style={({ pressed }) => [screenStyles.monitorClose, pressed && screenStyles.pressed]}
+                accessibilityRole="button"
+                accessibilityLabel="Close serial monitor and clear its data"
+              >
+                <Text style={screenStyles.monitorCloseText}>CLOSE</Text>
+              </Pressable>
+            </View>
+            <Text style={screenStyles.monitorDescription}>
+              Live sensor readings received by the app. Closing the monitor clears this session’s data.
+            </Text>
+            <ScrollView
+              style={screenStyles.monitorLog}
+              contentContainerStyle={screenStyles.monitorLogContent}
+              nestedScrollEnabled
+            >
+              {serialMonitorLines.length === 0 ? (
+                <Text style={screenStyles.monitorEmpty}>
+                  {isLive ? 'Waiting for the next device update…' : 'Waiting for a live device connection…'}
+                </Text>
+              ) : serialMonitorLines.map((line, index) => (
+                <Text key={`${index}-${line}`} selectable style={screenStyles.monitorLine}>{line}</Text>
+              ))}
+            </ScrollView>
+            <View style={screenStyles.monitorActions}>
+              <Pressable
+                onPress={copySerialMonitor}
+                disabled={serialMonitorLines.length === 0}
+                style={({ pressed }) => [
+                  screenStyles.monitorAction,
+                  serialMonitorLines.length === 0 && screenStyles.monitorActionDisabled,
+                  pressed && screenStyles.pressed,
+                ]}
+                accessibilityRole="button"
+              >
+                <Text style={screenStyles.monitorActionText}>COPY</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  setSerialMonitorLines([]);
+                  setSerialMonitorNotice(null);
+                }}
+                disabled={serialMonitorLines.length === 0}
+                style={({ pressed }) => [
+                  screenStyles.monitorAction,
+                  serialMonitorLines.length === 0 && screenStyles.monitorActionDisabled,
+                  pressed && screenStyles.pressed,
+                ]}
+                accessibilityRole="button"
+              >
+                <Text style={screenStyles.monitorActionText}>CLEAR</Text>
+              </Pressable>
+            </View>
+            {serialMonitorNotice ? (
+              <Text style={screenStyles.monitorNotice}>{serialMonitorNotice}</Text>
+            ) : null}
+          </View>
+        </Modal>
         <Text style={screenStyles.sectionTitle}>Current reading</Text>
         <Pressable
           onPress={() => {
@@ -764,6 +883,56 @@ const screenStyles = StyleSheet.create({
   eyebrow: { alignSelf: 'stretch', color: '#60777E', fontSize: 11, fontWeight: '700', letterSpacing: 1.5, marginTop: 10 },
   pageTitle: { alignSelf: 'stretch', color: '#172B33', fontSize: 32, fontWeight: '800', marginTop: 5 },
   intro: { alignSelf: 'stretch', color: '#60777E', fontSize: 14, lineHeight: 21, marginTop: 8 },
+  monitorToggle: {
+    alignItems: 'center',
+    alignSelf: 'stretch',
+    backgroundColor: '#173C45',
+    borderRadius: 13,
+    justifyContent: 'center',
+    marginTop: 13,
+    minHeight: 46,
+  },
+  monitorToggleText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800', letterSpacing: 0.8 },
+  monitorScreen: {
+    backgroundColor: '#102127',
+    flex: 1,
+    paddingBottom: 20,
+    paddingHorizontal: 16,
+    paddingTop: (StatusBar.currentHeight ?? 0) + 16,
+  },
+  monitorHeader: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
+  monitorTitleGroup: { alignItems: 'center', flexDirection: 'row', gap: 8 },
+  monitorDot: { backgroundColor: '#D69A3A', borderRadius: 5, height: 9, width: 9 },
+  monitorDotLive: { backgroundColor: '#47D18C' },
+  monitorTitle: { color: '#E8F1F2', fontSize: 16, fontWeight: '800' },
+  monitorClose: { paddingHorizontal: 8, paddingVertical: 5 },
+  monitorCloseText: { color: '#9FB4B9', fontSize: 10, fontWeight: '900', letterSpacing: 0.8 },
+  monitorDescription: { color: '#B5C7CA', fontSize: 10, lineHeight: 15, marginTop: 6 },
+  monitorLog: {
+    backgroundColor: '#071216',
+    borderColor: '#2C4147',
+    borderRadius: 10,
+    borderWidth: 1,
+    flex: 1,
+    marginBottom: 10,
+    marginTop: 16,
+    minHeight: 76,
+  },
+  monitorLogContent: { padding: 9 },
+  monitorEmpty: { color: '#8FA5AA', fontFamily: 'monospace', fontSize: 10, lineHeight: 16 },
+  monitorLine: { color: '#8EE5B3', fontFamily: 'monospace', fontSize: 9, lineHeight: 15, marginBottom: 4 },
+  monitorActions: { flexDirection: 'row', gap: 9, marginTop: 9 },
+  monitorAction: {
+    alignItems: 'center',
+    backgroundColor: '#244149',
+    borderRadius: 9,
+    flex: 1,
+    justifyContent: 'center',
+    minHeight: 36,
+  },
+  monitorActionDisabled: { opacity: 0.45 },
+  monitorActionText: { color: '#E8F1F2', fontSize: 10, fontWeight: '900', letterSpacing: 0.8 },
+  monitorNotice: { color: '#8EE5B3', fontSize: 10, marginTop: 8 },
   sectionTitle: { alignSelf: 'stretch', color: '#172B33', fontSize: 19, fontWeight: '800', marginBottom: 12, marginTop: 18 },
   readingCircle: {
     alignItems: 'center',

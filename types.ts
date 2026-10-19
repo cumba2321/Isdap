@@ -71,7 +71,11 @@ export type ActiveAlert = {
 export type Account = {
   email: string;
   authUid?: string;
-  farmName: string;
+  firstName?: string;
+  lastName?: string;
+  countryCode?: string;
+  countryName?: string;
+  countryCallingCode?: string;
   phoneNumber?: string;
 };
  

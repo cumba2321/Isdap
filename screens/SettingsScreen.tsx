@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import CountryPicker, { Country, CountryCode } from 'react-native-country-picker-modal';
+import { AsYouType, getCountryCallingCode, parsePhoneNumberFromString } from 'libphonenumber-js';
 import {
   Alert,
   Modal,
@@ -16,12 +18,16 @@ import { formatValue, metrics } from '../metrics';
 import { styles } from '../styles';
 import { AuthResult, ManagedDevice, NotificationPreferences, PondReading, SensorLog } from '../types';
 import * as XLSX from 'xlsx';
- 
+
 type SettingsScreenProps = {
-  farmName: string;
   devices: ManagedDevice[];
   selectedDeviceId: string | null;
   accountEmail: string;
+  firstName: string;
+  lastName: string;
+  countryCode: string;
+  countryName: string;
+  countryCallingCode: string;
   phoneNumber: string;
   reading: PondReading;
   lastUpdated: Date;
@@ -30,14 +36,25 @@ type SettingsScreenProps = {
   focusSmsSettings: boolean;
   onTogglePreference: (key: keyof NotificationPreferences) => void;
   onSmsSettingsFocused: () => void;
-  onUpdateFarmProfile: (newName: string, phoneNumber: string) => Promise<AuthResult>;
+  onUpdateAccountProfile: (profile: {
+    firstName: string;
+    lastName: string;
+    countryCode: string;
+    countryName: string;
+    countryCallingCode: string;
+    phoneNumber: string;
+  }) => Promise<AuthResult>;
   onClaimDevice: (deviceId: string, claimCode: string, name: string) => Promise<AuthResult>;
+  onUpdateDeviceName: (deviceId: string, name: string) => Promise<AuthResult>;
+  onGetDeviceClaimCode: (
+    deviceId: string,
+  ) => Promise<{ success: true; claimCode: string } | { success: false; error: string }>;
   onSelectDevice: (deviceId: string) => Promise<AuthResult>;
   onUnlinkDevice: (deviceId: string) => Promise<AuthResult>;
   onLogout: () => void;
   onDeleteAccount: () => Promise<AuthResult>;
 };
- 
+
 type RowBase = {
   key: string;
   icon: string;
@@ -114,10 +131,14 @@ const thresholdReference = [
 ];
  
 export default function SettingsScreen({
-  farmName,
   devices,
   selectedDeviceId,
   accountEmail,
+  firstName,
+  lastName,
+  countryCode,
+  countryName,
+  countryCallingCode,
   phoneNumber,
   reading,
   lastUpdated,
@@ -126,15 +147,17 @@ export default function SettingsScreen({
   focusSmsSettings,
   onTogglePreference,
   onSmsSettingsFocused,
-  onUpdateFarmProfile,
+  onUpdateAccountProfile,
   onClaimDevice,
+  onUpdateDeviceName,
+  onGetDeviceClaimCode,
   onSelectDevice,
   onUnlinkDevice,
   onLogout,
   onDeleteAccount,
 }: SettingsScreenProps) {
   const scrollViewRef = useRef<ScrollView>(null);
-  const [activeModal, setActiveModal] = useState<'farmProfile' | 'downloadData' | null>(null);
+  const [activeModal, setActiveModal] = useState<'accountProfile' | 'downloadData' | 'deviceDetails' | null>(null);
   const [qrScannerVisible, setQrScannerVisible] = useState(false);
   const [QrCameraView, setQrCameraView] = useState<typeof import('expo-camera').CameraView | null>(null);
   const [deletingAccount, setDeletingAccount] = useState(false);
@@ -143,55 +166,144 @@ export default function SettingsScreen({
   const [deviceNameDraft, setDeviceNameDraft] = useState('');
   const [deviceError, setDeviceError] = useState<string | null>(null);
   const [deviceBusy, setDeviceBusy] = useState<string | null>(null);
- 
-  const [farmNameDraft, setFarmNameDraft] = useState(farmName);
+
+  const [firstNameDraft, setFirstNameDraft] = useState(firstName);
+  const [lastNameDraft, setLastNameDraft] = useState(lastName);
+  const [countryCodeDraft, setCountryCodeDraft] = useState<CountryCode>(
+    (countryCode || 'PH') as CountryCode,
+  );
+  const [countryNameDraft, setCountryNameDraft] = useState(countryName || 'Philippines');
+  const [countryCallingCodeDraft, setCountryCallingCodeDraft] = useState(countryCallingCode || '63');
   const [phoneNumberDraft, setPhoneNumberDraft] = useState(phoneNumber);
-  const [farmProfileError, setFarmProfileError] = useState<string | null>(null);
-  const [smsNumberError, setSmsNumberError] = useState<string | null>(null);
-  const [smsNumberSaving, setSmsNumberSaving] = useState(false);
-  const [smsNumberSaved, setSmsNumberSaved] = useState(false);
+  const [accountProfileError, setAccountProfileError] = useState<string | null>(null);
+  const [deviceDetailsId, setDeviceDetailsId] = useState<string | null>(null);
+  const [deviceDetailsNameDraft, setDeviceDetailsNameDraft] = useState('');
+  const [deviceDetailsClaimCode, setDeviceDetailsClaimCode] = useState('');
+  const [deviceDetailsClaimCodeVisible, setDeviceDetailsClaimCodeVisible] = useState(false);
+  const [deviceDetailsError, setDeviceDetailsError] = useState<string | null>(null);
+
+  const syncAccountProfileDraft = () => {
+    const parsedPhone = phoneNumber ? parsePhoneNumberFromString(phoneNumber) : undefined;
+    const resolvedCountryCode = countryCode || parsedPhone?.country || 'PH';
+    const parsedCountryCallingCode = parsedPhone?.country
+      ? getCountryCallingCode(parsedPhone.country)
+      : undefined;
+    const resolvedCallingCode = countryCallingCode || parsedCountryCallingCode || '63';
+    setFirstNameDraft(firstName);
+    setLastNameDraft(lastName);
+    setCountryCodeDraft(resolvedCountryCode as CountryCode);
+    setCountryNameDraft(countryName || parsedPhone?.country || 'Philippines');
+    setCountryCallingCodeDraft(resolvedCallingCode);
+    setPhoneNumberDraft(parsedPhone && parsedCountryCallingCode === resolvedCallingCode
+      ? parsedPhone.formatNational()
+      : phoneNumber);
+  };
 
   useEffect(() => {
-    setPhoneNumberDraft(phoneNumber);
-  }, [phoneNumber]);
- 
+    syncAccountProfileDraft();
+  }, [countryCallingCode, countryCode, countryName, firstName, lastName, phoneNumber]);
+
   const [exportDate, setExportDate] = useState(() => {
     const now = new Date();
     return [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-');
   });
- 
+
   const closeModal = () => {
     setActiveModal(null);
-    setFarmProfileError(null);
+    setDeviceDetailsId(null);
+    setDeviceDetailsClaimCode('');
+    setDeviceDetailsClaimCodeVisible(false);
   };
- 
+
   const openFarmProfile = () => {
-    setFarmNameDraft(farmName);
-    setPhoneNumberDraft(phoneNumber);
-    setFarmProfileError(null);
-    setActiveModal('farmProfile');
+    setAccountProfileError(null);
+    syncAccountProfileDraft();
+    setActiveModal('accountProfile');
   };
  
-  const handleSaveFarmName = async () => {
-    const result = await onUpdateFarmProfile(farmNameDraft, phoneNumberDraft);
+  const handleSaveAccountProfile = async () => {
+    if (!firstNameDraft.trim() || !lastNameDraft.trim()) {
+      setAccountProfileError('Enter your first and last name.');
+      return;
+    }
+    let normalizedPhone = '';
+    if (phoneNumberDraft.trim()) {
+      const parsedPhone = countryCallingCodeDraft
+        ? parsePhoneNumberFromString(phoneNumberDraft, {
+          defaultCallingCode: countryCallingCodeDraft,
+        })
+        : undefined;
+      if (!parsedPhone?.isValid() ||
+        (parsedPhone.country && parsedPhone.country !== countryCodeDraft)) {
+        setAccountProfileError('Enter a valid phone number for the selected country.');
+        return;
+      }
+      normalizedPhone = parsedPhone.number;
+    }
+    const result = await onUpdateAccountProfile({
+      firstName: firstNameDraft.trim(),
+      lastName: lastNameDraft.trim(),
+      countryCode: countryCodeDraft,
+      countryName: countryNameDraft,
+      countryCallingCode: countryCallingCodeDraft,
+      phoneNumber: normalizedPhone,
+    });
     if (!result.success) {
-      setFarmProfileError(result.error);
+      setAccountProfileError(result.error);
       return;
     }
     closeModal();
   };
 
-  const handleSaveSmsNumber = async () => {
-    setSmsNumberSaving(true);
-    setSmsNumberError(null);
-    setSmsNumberSaved(false);
+  const openDeviceDetails = async (device: ManagedDevice) => {
+    setDeviceDetailsId(device.deviceId);
+    setDeviceDetailsNameDraft(device.name);
+    setDeviceDetailsClaimCode('');
+    setDeviceDetailsClaimCodeVisible(false);
+    setDeviceDetailsError(null);
+    setActiveModal('deviceDetails');
+    setDeviceBusy(`details:${device.deviceId}`);
     try {
-      const result = await onUpdateFarmProfile(farmName, phoneNumberDraft);
-      if (!result.success) setSmsNumberError(result.error);
-      else setSmsNumberSaved(true);
+      const result = await onGetDeviceClaimCode(device.deviceId);
+      if (result.success) {
+        setDeviceDetailsClaimCode(result.claimCode);
+      } else {
+        setDeviceDetailsError(result.error);
+      }
+    } catch {
+      setDeviceDetailsError('Could not load device information. Check your connection and try again.');
     } finally {
-      setSmsNumberSaving(false);
+      setDeviceBusy(null);
     }
+  };
+
+  const handleSaveDeviceDetails = async () => {
+    if (!deviceDetailsId) return;
+    const result = await onUpdateDeviceName(deviceDetailsId, deviceDetailsNameDraft);
+    if (!result.success) {
+      setDeviceDetailsError(result.error);
+      return;
+    }
+    closeModal();
+  };
+
+  const handleCountrySelect = (country: Country) => {
+    const parsedPhone = countryCallingCodeDraft
+      ? parsePhoneNumberFromString(phoneNumberDraft, {
+        defaultCallingCode: countryCallingCodeDraft,
+      })
+      : undefined;
+    setCountryCodeDraft(country.cca2);
+    setCountryNameDraft(typeof country.name === 'string' ? country.name : country.name.common);
+    setCountryCallingCodeDraft(country.callingCode[0] ?? '');
+    setPhoneNumberDraft((previous) => {
+      if (!previous) return '';
+      const nationalNumber = parsedPhone?.nationalNumber ?? previous.replace(/\D/g, '');
+      return country.callingCode[0]
+        ? new AsYouType({ defaultCallingCode: country.callingCode[0] }).input(nationalNumber)
+        : nationalNumber;
+    });
+    setAccountProfileError(null);
   };
 
   const handleClaimDevice = async () => {
@@ -399,8 +511,10 @@ export default function SettingsScreen({
           type: 'link',
           icon: '🌾',
           iconBg: '#FFF3D5',
-          title: 'Farm Profile',
-          subtitle: accountEmail ? `${farmName} · ${accountEmail}` : farmName,
+          title: 'Account Profile',
+          subtitle: accountEmail
+            ? `${[firstName, lastName].filter(Boolean).join(' ')} · ${accountEmail}`
+            : [firstName, lastName].filter(Boolean).join(' '),
           onPress: openFarmProfile,
         },
       ],
@@ -549,35 +663,46 @@ export default function SettingsScreen({
                 <Text style={screenStyles.deviceId}>{device.deviceId}</Text>
                 {isSelected ? <Text style={screenStyles.deviceSelected}>CURRENT SENSOR</Text> : null}
               </View>
-              {!isSelected ? (
-                <Pressable
-                  onPress={async () => {
-                    setDeviceBusy(device.deviceId);
-                    setDeviceError(null);
-                    const result = await onSelectDevice(device.deviceId);
-                    if (!result.success) setDeviceError(result.error);
-                    setDeviceBusy(null);
-                  }}
-                  disabled={deviceBusy !== null}
-                  style={screenStyles.deviceSmallButton}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Select ${device.name}`}
-                >
-                  <Text style={screenStyles.deviceSmallButtonText}>
-                    {deviceBusy === device.deviceId ? '…' : 'Select'}
-                  </Text>
-                </Pressable>
-              ) : null}
-              <Pressable
-                onPress={() => confirmUnlinkDevice(device)}
-                disabled={deviceBusy !== null}
-                style={screenStyles.deviceUnlinkButton}
-                accessibilityRole="button"
-                accessibilityLabel={`Unlink ${device.name}`}
-              >
-                <Text style={screenStyles.deviceUnlinkText}>Unlink</Text>
-              </Pressable>
-            </View>
+                <View style={screenStyles.deviceCardActions}>
+                  <Pressable
+                    onPress={() => { void openDeviceDetails(device); }}
+                    disabled={deviceBusy !== null}
+                    style={screenStyles.deviceSmallButton}
+                    accessibilityRole="button"
+                    accessibilityLabel={`View information for ${device.name}`}
+                  >
+                    <Text style={screenStyles.deviceSmallButtonText}>Details</Text>
+                  </Pressable>
+                  {!isSelected ? (
+                    <Pressable
+                      onPress={async () => {
+                        setDeviceBusy(device.deviceId);
+                        setDeviceError(null);
+                        const result = await onSelectDevice(device.deviceId);
+                        if (!result.success) setDeviceError(result.error);
+                        setDeviceBusy(null);
+                      }}
+                      disabled={deviceBusy !== null}
+                      style={screenStyles.deviceSmallButton}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Select ${device.name}`}
+                    >
+                      <Text style={screenStyles.deviceSmallButtonText}>
+                        {deviceBusy === device.deviceId ? '…' : 'Select'}
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                  <Pressable
+                    onPress={() => confirmUnlinkDevice(device)}
+                    disabled={deviceBusy !== null}
+                    style={screenStyles.deviceUnlinkButton}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Unlink ${device.name}`}
+                  >
+                    <Text style={screenStyles.deviceUnlinkText}>Unlink</Text>
+                  </Pressable>
+                </View>
+              </View>
           );
         })}
 
@@ -737,48 +862,18 @@ export default function SettingsScreen({
               );
               })}
             {section.title === 'NOTIFICATIONS' && preferences.smsNotifications ? (
-              <View style={screenStyles.smsNumberForm}>
-                <Text style={screenStyles.smsNumberTitle}>SMS recipient</Text>
+              <Pressable
+                onPress={openFarmProfile}
+                accessibilityRole="button"
+                style={({ pressed }) => [screenStyles.smsNumberForm, pressed && styles.tabButtonPressed]}
+              >
+                <Text style={screenStyles.smsNumberTitle}>SMS alert phone</Text>
                 <Text style={screenStyles.smsNumberCopy}>
-                  This number is shared with your linked SIM800L boards.
+                  {phoneNumber
+                    ? `${phoneNumber} · Change it in Account Profile`
+                    : 'No phone number yet. Add one in Account Profile to receive critical alerts.'}
                 </Text>
-                <View style={[styles.inputRow, screenStyles.smsNumberInput]}>
-                  <TextInput
-                    value={phoneNumberDraft}
-                    onChangeText={(value) => {
-                      setPhoneNumberDraft(value);
-                      setSmsNumberError(null);
-                      setSmsNumberSaved(false);
-                    }}
-                    placeholder="+639171234567"
-                    placeholderTextColor="#71868C"
-                    keyboardType="phone-pad"
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    style={styles.textInput}
-                    accessibilityLabel="SMS recipient phone number"
-                  />
-                </View>
-                <Text style={screenStyles.smsNumberHint}>Include the + and country code.</Text>
-                {smsNumberSaved ? (
-                  <Text style={screenStyles.smsNumberSaved}>Saved. Linked boards update within about a minute.</Text>
-                ) : null}
-                {smsNumberError ? (
-                  <Text style={screenStyles.deviceError} accessibilityRole="alert">{smsNumberError}</Text>
-                ) : null}
-                <Pressable
-                  onPress={handleSaveSmsNumber}
-                  disabled={smsNumberSaving}
-                  accessibilityRole="button"
-                  style={({ pressed }) => [
-                    screenStyles.smsNumberSaveButton,
-                    smsNumberSaving && styles.primaryButtonDisabled,
-                    pressed && styles.tabButtonPressed,
-                  ]}
-                >
-                  <Text style={screenStyles.smsNumberSaveText}>{smsNumberSaving ? 'Saving…' : 'Save number'}</Text>
-                </Pressable>
-              </View>
+              </Pressable>
             ) : null}
           </View>
         </View>
@@ -796,55 +891,178 @@ export default function SettingsScreen({
         <Text style={styles.logoutButtonText}>Logout</Text>
       </Pressable>
  
-      {/* Farm Profile modal */}
-      <Modal visible={activeModal === 'farmProfile'} transparent animationType="fade" onRequestClose={closeModal}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <Text style={styles.authCardTitle}>Farm Profile</Text>
-            <Text style={styles.authCardSubtitle}>Update the name shown on your dashboard</Text>
- 
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>FARM NAME</Text>
-              <View style={styles.inputRow}>
-                <TextInput
-                  value={farmNameDraft}
-                  onChangeText={setFarmNameDraft}
-                  placeholder="e.g. Pond one"
-                  placeholderTextColor="#49656D"
-                  style={styles.textInput}
-                />
-              </View>
-              {farmProfileError ? <Text style={styles.fieldErrorText}>{farmProfileError}</Text> : null}
-            </View>
- 
-            <Text style={styles.settingsRowSubtitle}>Google account: {accountEmail}</Text>
+      <Modal visible={activeModal === 'accountProfile'} transparent animationType="fade" onRequestClose={closeModal}>
+        <View style={[styles.modalOverlay, screenStyles.profileModalOverlay]}>
+          <View style={[styles.modalCard, screenStyles.profileModalCard]}>
+            <ScrollView
+              style={screenStyles.profileModalScroll}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={screenStyles.profileModalContent}
+            >
+            <Text style={styles.authCardTitle}>Account Profile</Text>
+            <Text style={styles.authCardSubtitle}>Update your contact details. Your phone number is also used for SMS alerts.</Text>
 
             <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>SMS PHONE NUMBER</Text>
+              <Text style={styles.inputLabel}>FIRST NAME</Text>
               <View style={styles.inputRow}>
                 <TextInput
-                  value={phoneNumberDraft}
-                  onChangeText={setPhoneNumberDraft}
-                  placeholder="e.g. +639171234567"
+                  value={firstNameDraft}
+                  onChangeText={setFirstNameDraft}
+                  placeholder="First name"
                   placeholderTextColor="#49656D"
-                  keyboardType="phone-pad"
+                  autoCapitalize="words"
+                  textContentType="givenName"
                   style={styles.textInput}
                 />
               </View>
-              <Text style={styles.settingsRowSubtitle}>Use international format, including the country code.</Text>
             </View>
- 
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>LAST NAME</Text>
+              <View style={styles.inputRow}>
+                <TextInput
+                  value={lastNameDraft}
+                  onChangeText={setLastNameDraft}
+                  placeholder="Last name"
+                  placeholderTextColor="#49656D"
+                  autoCapitalize="words"
+                  textContentType="familyName"
+                  style={styles.textInput}
+                />
+              </View>
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>COUNTRY</Text>
+              <View style={screenStyles.profileCountryRow}>
+                <CountryPicker
+                  countryCode={countryCodeDraft}
+                  withFilter
+                  withFlag
+                  withCountryNameButton
+                  onSelect={handleCountrySelect}
+                  containerButtonStyle={screenStyles.profileCountryButton}
+                />
+              </View>
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>PHONE NUMBER (OPTIONAL)</Text>
+              <View style={screenStyles.profilePhoneRow}>
+                <Text style={screenStyles.profileCallingCode}>+{countryCallingCodeDraft}</Text>
+                <TextInput
+                  value={phoneNumberDraft}
+                  onChangeText={(value) => setPhoneNumberDraft(countryCallingCodeDraft
+                    ? new AsYouType({ defaultCallingCode: countryCallingCodeDraft }).input(value)
+                    : value.replace(/[^\d+]/g, ''))}
+                  placeholder="Phone number"
+                  placeholderTextColor="#49656D"
+                  keyboardType="phone-pad"
+                  style={screenStyles.profilePhoneInput}
+                />
+              </View>
+              <Text style={screenStyles.profilePhoneHint}>Optional. Used for SMS alerts when a pond reaches critical condition.</Text>
+            </View>
+
+            <Text style={styles.settingsRowSubtitle}>Google account: {accountEmail}</Text>
+            {accountProfileError ? <Text style={styles.fieldErrorText}>{accountProfileError}</Text> : null}
+
             <View style={styles.modalButtonRow}>
               <Pressable onPress={closeModal} style={[styles.secondaryButton, styles.modalButtonHalf]}>
                 <Text style={styles.secondaryButtonText}>Cancel</Text>
               </Pressable>
               <Pressable
-                onPress={handleSaveFarmName}
+                onPress={handleSaveAccountProfile}
                 style={[styles.primaryButton, styles.modalButtonHalf]}
               >
                 <Text style={styles.primaryButtonText}>Save</Text>
               </Pressable>
             </View>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={activeModal === 'deviceDetails'} transparent animationType="fade" onRequestClose={closeModal}>
+        <View style={[styles.modalOverlay, screenStyles.profileModalOverlay]}>
+          <View style={[styles.modalCard, screenStyles.profileModalCard]}>
+            <ScrollView
+              style={screenStyles.profileModalScroll}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={screenStyles.profileModalContent}
+            >
+              <Text style={styles.authCardTitle}>Device Information</Text>
+              <Text style={styles.authCardSubtitle}>
+                Update this pond’s name and view its private claim code.
+              </Text>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>DEVICE ID</Text>
+                <View style={styles.inputRow}>
+                  <Text style={screenStyles.deviceDetailValue}>{deviceDetailsId ?? ''}</Text>
+                </View>
+              </View>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>POND NAME</Text>
+                <View style={styles.inputRow}>
+                  <TextInput
+                    value={deviceDetailsNameDraft}
+                    onChangeText={setDeviceDetailsNameDraft}
+                    placeholder="e.g. Tilapia pond"
+                    placeholderTextColor="#49656D"
+                    autoCapitalize="words"
+                    style={styles.textInput}
+                    accessibilityLabel="Pond name"
+                  />
+                </View>
+              </View>
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>PRIVATE CLAIM CODE</Text>
+                <View style={screenStyles.deviceClaimCodeRow}>
+                  <TextInput
+                    value={deviceDetailsClaimCode}
+                    editable={false}
+                    secureTextEntry={!deviceDetailsClaimCodeVisible}
+                    placeholder={deviceBusy === `details:${deviceDetailsId}` ? 'Loading…' : 'Unavailable'}
+                    placeholderTextColor="#6A8188"
+                    style={screenStyles.deviceClaimCodeInput}
+                    accessibilityLabel="Private device claim code"
+                  />
+                  <Pressable
+                    onPress={() => setDeviceDetailsClaimCodeVisible((visible) => !visible)}
+                    disabled={!deviceDetailsClaimCode}
+                    style={screenStyles.deviceSmallButton}
+                    accessibilityRole="button"
+                    accessibilityLabel={deviceDetailsClaimCodeVisible ? 'Hide claim code' : 'Show claim code'}
+                  >
+                    <Text style={screenStyles.deviceSmallButtonText}>
+                      {deviceDetailsClaimCodeVisible ? 'Hide' : 'Show'}
+                    </Text>
+                  </Pressable>
+                </View>
+                <Text style={screenStyles.profilePhoneHint}>
+                  Keep this code private. Anyone with it may be able to claim the device after it is unlinked.
+                </Text>
+              </View>
+
+              {deviceDetailsError ? (
+                <Text style={screenStyles.deviceError} accessibilityRole="alert">{deviceDetailsError}</Text>
+              ) : null}
+
+              <View style={styles.modalButtonRow}>
+                <Pressable onPress={closeModal} style={[styles.secondaryButton, styles.modalButtonHalf]}>
+                  <Text style={styles.secondaryButtonText}>Close</Text>
+                </Pressable>
+                <Pressable
+                  onPress={handleSaveDeviceDetails}
+                  disabled={deviceDetailsId === null || deviceBusy !== null}
+                  style={[styles.primaryButton, styles.modalButtonHalf, deviceBusy !== null && styles.primaryButtonDisabled]}
+                >
+                  <Text style={styles.primaryButtonText}>Save pond name</Text>
+                </Pressable>
+              </View>
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -923,6 +1141,34 @@ export default function SettingsScreen({
 }
 
 const screenStyles = StyleSheet.create({
+  profileModalOverlay: { paddingBottom: 18, paddingTop: 36 },
+  profileModalCard: { maxHeight: '100%', padding: 18 },
+  profileModalScroll: { flexShrink: 1 },
+  profileModalContent: { paddingBottom: 4 },
+  profileCountryRow: {
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderColor: '#D5E0E3',
+    borderRadius: 12,
+    borderWidth: 1,
+    justifyContent: 'flex-start',
+    minHeight: 52,
+    paddingHorizontal: 12,
+  },
+  profileCountryButton: { alignSelf: 'stretch', justifyContent: 'flex-start', paddingVertical: 10 },
+  profilePhoneRow: {
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderColor: '#D5E0E3',
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: 'row',
+    minHeight: 52,
+    paddingHorizontal: 8,
+  },
+  profileCallingCode: { borderRightColor: '#D5E0E3', borderRightWidth: 1, color: '#334B53', fontSize: 15, fontWeight: '700', paddingHorizontal: 8, paddingVertical: 8 },
+  profilePhoneInput: { color: '#172B33', flex: 1, fontSize: 15, minWidth: 0, paddingHorizontal: 10, paddingVertical: 10 },
+  profilePhoneHint: { color: '#71868C', fontSize: 10, lineHeight: 15, marginTop: 5 },
   deviceSection: { marginBottom: 8 },
   deviceIntro: { color: '#60777E', fontSize: 12, lineHeight: 18, marginBottom: 13, marginTop: 4 },
   deviceEmpty: {
@@ -936,16 +1182,15 @@ const screenStyles = StyleSheet.create({
   deviceEmptyTitle: { color: '#172B33', fontSize: 14, fontWeight: '800' },
   deviceEmptyCopy: { color: '#60777E', fontSize: 12, lineHeight: 17, marginTop: 4 },
   deviceCard: {
-    alignItems: 'center',
+    alignItems: 'stretch',
     backgroundColor: '#FFFFFF',
     borderColor: '#DDE7EB',
     borderRadius: 16,
     borderWidth: 1,
-    flexDirection: 'row',
-    gap: 8,
     marginBottom: 10,
     padding: 14,
   },
+  deviceCardActions: { alignItems: 'center', flexDirection: 'row', gap: 10, justifyContent: 'flex-end', marginTop: 10 },
   deviceInfo: { flex: 1, minWidth: 0 },
   deviceName: { color: '#172B33', fontSize: 14, fontWeight: '800' },
   deviceId: { color: '#60777E', fontSize: 11, marginTop: 3 },
@@ -954,6 +1199,18 @@ const screenStyles = StyleSheet.create({
   deviceSmallButtonText: { color: '#087F8C', fontSize: 11, fontWeight: '800' },
   deviceUnlinkButton: { paddingHorizontal: 5, paddingVertical: 8 },
   deviceUnlinkText: { color: '#C84F5B', fontSize: 11, fontWeight: '700' },
+  deviceDetailValue: { color: '#172B33', flex: 1, fontSize: 14, paddingHorizontal: 12, paddingVertical: 12 },
+  deviceClaimCodeRow: {
+    alignItems: 'center',
+    borderColor: '#D5E0E3',
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 8,
+    minHeight: 52,
+    paddingHorizontal: 8,
+  },
+  deviceClaimCodeInput: { color: '#172B33', flex: 1, fontSize: 14, minWidth: 0, paddingHorizontal: 8, paddingVertical: 10 },
   deviceForm: {
     backgroundColor: '#FFFFFF',
     borderColor: '#DDE7EB',
@@ -983,10 +1240,5 @@ const screenStyles = StyleSheet.create({
   smsNumberForm: { borderTopColor: '#E7ECEE', borderTopWidth: 1, marginTop: 4, padding: 15 },
   smsNumberTitle: { color: '#203840', fontSize: 13, fontWeight: '800' },
   smsNumberCopy: { color: '#71868C', fontSize: 11, lineHeight: 16, marginTop: 3 },
-  smsNumberInput: { marginTop: 12 },
-  smsNumberHint: { color: '#71868C', fontSize: 10, marginTop: 5 },
-  smsNumberSaved: { color: '#087C73', fontSize: 10, lineHeight: 15, marginTop: 7 },
-  smsNumberSaveButton: { alignItems: 'center', alignSelf: 'flex-start', backgroundColor: '#173C45', borderRadius: 11, marginTop: 12, paddingHorizontal: 16, paddingVertical: 10 },
-  smsNumberSaveText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
 });
  

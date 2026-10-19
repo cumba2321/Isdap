@@ -46,7 +46,7 @@ export default function LoginScreen({ onSignIn, onNavigateSignUp }: LoginScreenP
         <View style={styles.authCard}>
           <Text style={styles.authCardTitle}>Sign in</Text>
           <Text style={styles.authCardSubtitle}>
-            Sign in securely with the Google account linked to your IsdaApp account. No PIN or email code is needed.
+            Sign in securely with the Google account linked to your IsdaApp account.
           </Text>
 
           {error ? (

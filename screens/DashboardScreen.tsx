@@ -1,15 +1,25 @@
-import { useState } from 'react';
-import { Image, Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { Animated, Easing, Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { formatValue, metrics } from '../metrics';
 import { styles } from '../styles';
 import { AuthResult, ManagedDevice, PondReading } from '../types';
+
+const MASCOT_FRAMES = [
+  require('../assets/fish-mascot.png'),
+  require('../assets/fish-mascot-frame-1.png'),
+  require('../assets/fish-mascot-frame-2.png'),
+  require('../assets/fish-mascot-frame-3.png'),
+  require('../assets/fish-mascot-frame-4.png'),
+  require('../assets/fish-mascot-frame-5.png'),
+];
+const MASCOT_FRAME_DURATIONS = [380, 100, 110, 100, 380, 180];
 
 type DashboardScreenProps = {
   reading: PondReading;
   isLive: boolean;
   lastUpdated: Date;
   hasAlert: boolean;
-  farmName: string;
+  greetingName: string;
   deviceName: string | null;
   devices: ManagedDevice[];
   selectedDeviceId: string | null;
@@ -24,7 +34,7 @@ export default function DashboardScreen({
   isLive,
   lastUpdated,
   hasAlert,
-  farmName,
+  greetingName,
   deviceName,
   devices,
   selectedDeviceId,
@@ -36,6 +46,8 @@ export default function DashboardScreen({
   const [devicePickerVisible, setDevicePickerVisible] = useState(false);
   const [devicePickerError, setDevicePickerError] = useState('');
   const [selectingDeviceId, setSelectingDeviceId] = useState<string | null>(null);
+  const [mascotFrame, setMascotFrame] = useState(0);
+  const mascotSwim = useRef(new Animated.Value(0)).current;
   const displayedReading = isLive
     ? reading
     : { temp: 0, ec: 0, do: 0, ph: 0, tds: 0, turbidity: 0 };
@@ -45,17 +57,52 @@ export default function DashboardScreen({
     : isLive
       ? 'Your latest readings are within their target ranges.'
       : 'Sample readings are shown until your sensor connects.';
+  const now = new Date();
+  const dateLabel = `${now.toLocaleDateString('en-US', { weekday: 'long' }).toUpperCase()}, ${now.toLocaleDateString('en-US', { month: 'long' }).toUpperCase()} ${now.getDate()}`;
+  const hour = now.getHours();
+  const timeOfDay = hour < 12 ? 'morning' : hour < 17 ? 'afternoon' : 'evening';
+
+  useEffect(() => {
+    let timeout: ReturnType<typeof setTimeout>;
+    let currentFrame = 0;
+    const advanceFrame = () => {
+      timeout = setTimeout(() => {
+        currentFrame = (currentFrame + 1) % MASCOT_FRAMES.length;
+        setMascotFrame(currentFrame);
+        advanceFrame();
+      }, MASCOT_FRAME_DURATIONS[currentFrame]);
+    };
+    advanceFrame();
+    return () => clearTimeout(timeout);
+  }, []);
+
+  useEffect(() => {
+    const swim = Animated.loop(
+      Animated.sequence([
+        Animated.timing(mascotSwim, {
+          toValue: 1,
+          duration: 1250,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+        Animated.timing(mascotSwim, {
+          toValue: -1,
+          duration: 1250,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    swim.start();
+    return () => swim.stop();
+  }, [mascotSwim]);
 
   return (
     <ScrollView contentContainerStyle={styles.content}>
-      <View style={styles.header}>
-        <View style={styles.dashboardIdentity}>
-          <Image
-            source={require('../assets/isdapp-logo.png')}
-            style={{ height: 42, marginRight: 10, width: 42 }}
-            resizeMode="contain"
-            accessibilityLabel="IsdaApp water-quality logo"
-          />
+      <View style={styles.dashboardGreetingHeader}>
+        <View style={styles.dashboardGreetingCopy}>
+          <Text style={styles.dashboardGreetingDate}>{dateLabel}</Text>
+          <Text numberOfLines={2} style={styles.dashboardGreeting}>Good {timeOfDay}, {greetingName}!</Text>
           {devices.length > 1 ? (
             <Pressable
               onPress={() => {
@@ -66,17 +113,56 @@ export default function DashboardScreen({
               accessibilityLabel={`Selected pond ${deviceName}. Tap to switch pond.`}
               style={({ pressed }) => [styles.dashboardDeviceSelector, pressed && styles.pressed]}
             >
-              <Text numberOfLines={1} style={styles.dashboardDeviceName}>{deviceName ?? farmName}</Text>
+              <Text numberOfLines={1} style={styles.dashboardDeviceName}>{deviceName ?? 'Select a pond'}</Text>
               <Text style={styles.dashboardDeviceChevron}>⌄</Text>
             </Pressable>
-          ) : (
-            <Text numberOfLines={1} style={styles.title}>{deviceName ?? farmName}</Text>
-          )}
+          ) : deviceName ? (
+            <Text numberOfLines={1} style={styles.dashboardGreetingPond}>Pond · {deviceName}</Text>
+          ) : null}
         </View>
         <View style={styles.stationBadge}>
           <View style={[styles.statusDot, isLive ? styles.liveDot : styles.demoDot]} />
           <Text style={styles.stationText}>{isLive ? 'LIVE' : 'PREVIEW'}</Text>
         </View>
+      </View>
+
+      <View style={styles.dashboardMascotCard} accessibilityLabel="IsdaApp fish mascot">
+        <View style={styles.dashboardMascotGlow} />
+        <View style={styles.dashboardMascotBubbleOne} />
+        <View style={styles.dashboardMascotBubbleTwo} />
+        <View style={styles.dashboardMascotWaveBack} />
+        <View style={styles.dashboardMascotWaveFront} />
+        <View
+          accessible
+          accessibilityLabel={isLive
+            ? "I'm keeping an eye on your pond's readings. Check your dashboard for the latest update."
+            : "Hi! I'm here to help you keep an eye on your pond's water quality. Connect the device to see live readings and alerts."}
+          style={styles.dashboardMascotDialogue}
+        >
+          <View style={styles.dashboardMascotDialogueTail} />
+          <Text style={styles.dashboardMascotDialogueText}>
+            {isLive
+              ? "I'm keeping an eye on your pond's readings. Check your dashboard for the latest update."
+              : "Hi! I'm here to help you keep an eye on your pond's water quality. Connect the device to see live readings and alerts."}
+          </Text>
+        </View>
+        <Animated.Image
+          source={MASCOT_FRAMES[mascotFrame]}
+          style={[
+            styles.dashboardMascot,
+            {
+              transform: [
+                { translateX: mascotSwim.interpolate({ inputRange: [-1, 1], outputRange: [-2, 2] }) },
+                { translateY: mascotSwim.interpolate({ inputRange: [-1, 1], outputRange: [2, -3] }) },
+                { rotate: mascotSwim.interpolate({ inputRange: [-1, 1], outputRange: ['2deg', '-2deg'] }) },
+              ],
+            },
+          ]}
+          resizeMode="contain"
+          accessibilityLabel="Animated IsdaApp fish mascot"
+        />
+        <View style={styles.dashboardMascotSparkleTop} />
+        <View style={styles.dashboardMascotSparkleSide} />
       </View>
 
       <Modal

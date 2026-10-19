@@ -11,7 +11,8 @@ import {
 } from 'firebase/auth';
 import { get, limitToLast, onValue, orderByChild, push, query, ref, runTransaction, set, update } from 'firebase/database';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Platform, SafeAreaView, Vibration, View } from 'react-native';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import { ActivityIndicator, Alert, Platform, Vibration, View } from 'react-native';
 
 import TabBar from './components/TabBar';
 import { auth, db as database, GOOGLE_WEB_CLIENT_ID } from './firebaseConfig';
@@ -99,7 +100,7 @@ const DEFAULT_PREFERENCES: NotificationPreferences = {
 
 GoogleSignin.configure({ webClientId: GOOGLE_WEB_CLIENT_ID });
 
-export default function App() {
+function AppContent() {
   const [deviceReading, setDeviceReading] = useState<PondReading>(demoReading);
   const [sensorVoltages, setSensorVoltages] = useState<SensorVoltages>({});
   const [voltageUpdatedAt, setVoltageUpdatedAt] = useState<number | null>(null);
@@ -120,6 +121,7 @@ export default function App() {
   const [historyLoading, setHistoryLoading] = useState(true);
   const [pushPermissionGranted, setPushPermissionGranted] = useState(false);
   const hasRestoredInitialAuth = useRef(false);
+  const pendingSignupUid = useRef<string | null>(null);
 
   const isAuthenticated = farmId !== null;
   const managedDevices: ManagedDevice[] = Object.entries(currentAccount?.devices ?? {}).map(
@@ -138,8 +140,28 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (!hasRestoredInitialAuth.current) {
         hasRestoredInitialAuth.current = true;
-        setFarmId(user?.uid ?? null);
-        setAuthReady(true);
+        void (async () => {
+          if (!user) {
+            setFarmId(null);
+            setAuthReady(true);
+            return;
+          }
+          try {
+            const accountSnapshot = await get(ref(database, `${ACCOUNTS_PATH}/${user.uid}`));
+            if (accountSnapshot.exists()) {
+              setFarmId(user.uid);
+            } else {
+              pendingSignupUid.current = user.uid;
+              setAuthScreen('signup');
+              setFarmId(null);
+            }
+          } catch {
+            Alert.alert('Account unavailable', 'Could not verify your account. Check your connection and try again.');
+            setFarmId(null);
+          } finally {
+            setAuthReady(true);
+          }
+        })();
         return;
       }
       if (!user) setFarmId(null);
@@ -156,7 +178,19 @@ export default function App() {
     }
     const unsubscribe = onValue(
       ref(database, `${ACCOUNTS_PATH}/${farmId}`),
-      (snapshot) => setCurrentAccount(snapshot.val() as StoredAccount | null),
+      (snapshot) => {
+        const account = snapshot.val() as StoredAccount | null;
+        if (!account) {
+          setCurrentAccount(null);
+          return;
+        }
+        const googleName = auth.currentUser?.displayName?.trim().split(/\s+/) ?? [];
+        setCurrentAccount({
+          ...account,
+          firstName: account.firstName?.trim() || googleName[0] || '',
+          lastName: account.lastName?.trim() || googleName.slice(1).join(' '),
+        });
+      },
       () => Alert.alert('Account unavailable', 'Could not load account settings. Check your connection and database rules.'),
     );
     return unsubscribe;
@@ -190,10 +224,43 @@ export default function App() {
     return user;
   };
 
-  const handleSignUp = async (onStepChange: (step: number) => void): Promise<AuthResult> => {
+  const handleVerifyGoogleForSignUp = async (): Promise<
+    | { status: 'verified' }
+    | { status: 'existing' }
+    | { status: 'error'; error: string }
+  > => {
     try {
       const user = await authenticateWithGoogle();
-      onStepChange(1);
+      const accountSnapshot = await get(ref(database, `${ACCOUNTS_PATH}/${user.uid}`));
+      if (accountSnapshot.exists()) {
+        pendingSignupUid.current = null;
+        return { status: 'existing' };
+      }
+      pendingSignupUid.current = user.uid;
+      return { status: 'verified' };
+    } catch (error) {
+      return {
+        status: 'error',
+        error: error instanceof Error ? error.message : 'Google account verification failed. Please try again.',
+      };
+    }
+  };
+
+  const handleCreateAccount = async (
+    profile: {
+      firstName: string;
+      lastName: string;
+      countryCode: string;
+      countryName: string;
+      countryCallingCode: string;
+      phoneNumber: string;
+    },
+  ): Promise<AuthResult> => {
+    try {
+      const user = auth.currentUser;
+      if (!user || pendingSignupUid.current !== user.uid) {
+        return { success: false, error: 'Verify your Google account again before creating your account.' };
+      }
       const email = user.email?.trim().toLowerCase();
       if (!email) {
         return { success: false, error: 'The selected Google account does not have an email address.' };
@@ -201,24 +268,45 @@ export default function App() {
       const account: StoredAccount = {
         authUid: user.uid,
         email,
-        farmName: 'Pond one',
+        firstName: profile.firstName,
+        lastName: profile.lastName,
+        countryCode: profile.countryCode,
+        countryName: profile.countryName,
+        countryCallingCode: profile.countryCallingCode,
+        phoneNumber: profile.phoneNumber,
         preferences: DEFAULT_PREFERENCES,
       };
       const accountRef = ref(database, `${ACCOUNTS_PATH}/${user.uid}`);
       const result = await runTransaction(accountRef, (current) => current ? undefined : account);
       const storedAccount = result.snapshot.val() as StoredAccount | null;
       if (!result.committed || !storedAccount) {
+        pendingSignupUid.current = null;
         return { success: false, error: 'This Google account already has an app account. Sign in instead.' };
       }
+      pendingSignupUid.current = null;
       setCurrentAccount(storedAccount);
       setFarmId(user.uid);
       return { success: true };
     } catch (error) {
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Google sign-up failed. Please try again.',
+        error: error instanceof Error ? error.message : 'Account creation failed. Please try again.',
       };
     }
+  };
+
+  const handleLeaveSignUp = async () => {
+    if (pendingSignupUid.current !== null) {
+      try {
+        await signOut(auth);
+        await GoogleSignin.signOut();
+      } catch {
+        Alert.alert('Sign out failed', 'Could not clear the verified Google session. Please try again.');
+        return;
+      }
+      pendingSignupUid.current = null;
+    }
+    setAuthScreen('login');
   };
 
   const handleSignIn = async (): Promise<AuthResult> => {
@@ -235,7 +323,14 @@ export default function App() {
         await update(accountRef, { pin: null });
       }
 
-      const accountWithoutPin = { ...account };
+      const googleName = user.displayName?.trim().split(/\s+/) ?? [];
+      const firstName = account.firstName?.trim() || googleName[0] || '';
+      const lastName = account.lastName?.trim() || googleName.slice(1).join(' ');
+      if (firstName !== account.firstName || lastName !== account.lastName) {
+        await update(accountRef, { firstName, lastName });
+      }
+
+      const accountWithoutPin = { ...account, firstName, lastName };
       delete accountWithoutPin.pin;
       setCurrentAccount(accountWithoutPin);
       setFarmId(user.uid);
@@ -319,28 +414,58 @@ export default function App() {
     }
   };
 
-  const handleUpdateFarmProfile = async (newName: string, phoneNumber: string): Promise<AuthResult> => {
+  const handleUpdateAccountProfile = async (profile: {
+    firstName: string;
+    lastName: string;
+    countryCode: string;
+    countryName: string;
+    countryCallingCode: string;
+    phoneNumber: string;
+  }): Promise<AuthResult> => {
     if (!farmId) return { success: false, error: 'You are not signed in.' };
-    const trimmed = newName.trim();
-    if (!trimmed) return { success: false, error: 'Farm name cannot be empty.' };
-    const normalizedPhone = phoneNumber.trim();
-    if (preferences.smsNotifications && !/^\+[1-9]\d{7,14}$/.test(normalizedPhone)) {
-      return { success: false, error: 'Enter a valid phone number with + and country code, such as +639171234567.' };
+    if (!profile.firstName.trim() || !profile.lastName.trim()) {
+      return { success: false, error: 'First name and last name are required.' };
     }
+    const normalizedPhone = profile.phoneNumber.trim();
+    if (normalizedPhone && !/^\+[1-9]\d{7,14}$/.test(normalizedPhone)) {
+      return { success: false, error: 'Enter a valid international phone number, or leave it blank.' };
+    }
+    const nextPreferences = normalizedPhone || !preferences.smsNotifications
+      ? preferences
+      : { ...preferences, smsNotifications: false };
     try {
-      const changes: Record<string, string | boolean> = {
-        [`${ACCOUNTS_PATH}/${farmId}/farmName`]: trimmed,
+      const changes: Record<string, string | boolean | NotificationPreferences> = {
+        [`${ACCOUNTS_PATH}/${farmId}/firstName`]: profile.firstName.trim(),
+        [`${ACCOUNTS_PATH}/${farmId}/lastName`]: profile.lastName.trim(),
+        [`${ACCOUNTS_PATH}/${farmId}/countryCode`]: profile.countryCode,
+        [`${ACCOUNTS_PATH}/${farmId}/countryName`]: profile.countryName,
+        [`${ACCOUNTS_PATH}/${farmId}/countryCallingCode`]: profile.countryCallingCode,
         [`${ACCOUNTS_PATH}/${farmId}/phoneNumber`]: normalizedPhone,
       };
+      if (nextPreferences !== preferences) {
+        changes[`${ACCOUNTS_PATH}/${farmId}/preferences`] = nextPreferences;
+      }
       managedDevices.forEach(({ deviceId }) => {
         const configPath = `deviceConfig/${deviceId}`;
-        changes[`${configPath}/alertNumber`] = preferences.smsNotifications ? normalizedPhone : '';
-        changes[`${configPath}/smsEnabled`] = preferences.smsNotifications;
-        changes[`${configPath}/smsCritical`] = preferences.smsCritical;
-        changes[`${configPath}/smsWarning`] = preferences.smsWarning;
+        changes[`${configPath}/alertNumber`] = nextPreferences.smsNotifications ? normalizedPhone : '';
+        changes[`${configPath}/smsEnabled`] = nextPreferences.smsNotifications;
+        changes[`${configPath}/smsCritical`] = nextPreferences.smsCritical;
+        changes[`${configPath}/smsWarning`] = nextPreferences.smsWarning;
       });
       await update(ref(database), changes);
-      setCurrentAccount((previous) => previous ? { ...previous, farmName: trimmed, phoneNumber: normalizedPhone } : previous);
+      setCurrentAccount((previous) => previous
+        ? {
+          ...previous,
+          firstName: profile.firstName.trim(),
+          lastName: profile.lastName.trim(),
+          countryCode: profile.countryCode,
+          countryName: profile.countryName,
+          countryCallingCode: profile.countryCallingCode,
+          phoneNumber: normalizedPhone,
+          preferences: nextPreferences,
+        }
+        : previous);
+      setPreferences(nextPreferences);
       return { success: true };
     } catch {
       return { success: false, error: 'Could not save your farm profile. Check your connection and database rules.' };
@@ -607,8 +732,10 @@ export default function App() {
         await update(ref(database), {
           [`${ACCOUNTS_PATH}/${farmId}/devices`]: nextDevices,
           [`${ACCOUNTS_PATH}/${farmId}/selectedDeviceId`]: deviceId,
-          [`${configPath}/alertNumber`]: preferences.smsNotifications ? currentAccount?.phoneNumber ?? '' : '',
-          [`${configPath}/smsEnabled`]: preferences.smsNotifications,
+          [`${configPath}/alertNumber`]: preferences.smsNotifications && currentAccount?.phoneNumber
+            ? currentAccount.phoneNumber
+            : '',
+          [`${configPath}/smsEnabled`]: preferences.smsNotifications && Boolean(currentAccount?.phoneNumber),
           [`${configPath}/smsCritical`]: preferences.smsCritical,
           [`${configPath}/smsWarning`]: preferences.smsWarning,
         });
@@ -638,6 +765,49 @@ export default function App() {
           ? `Could not link device. ${mayAlreadyBeClaimed ? 'It may already be linked to another account, or the Firebase rules may not be configured yet. ' : ''}Check the ID, claim code, Firebase rules, and device provisioning. (${details})`
           : 'Could not link device. Check the ID, claim code, connection, and Firebase rules.',
       };
+    }
+  };
+
+  const handleUpdateDeviceName = async (deviceId: string, nameInput: string): Promise<AuthResult> => {
+    if (!farmId || !currentAccount?.devices?.[deviceId]) {
+      return { success: false, error: 'This device is not linked to your account.' };
+    }
+    const name = nameInput.trim();
+    if (!name || name.length > 64) {
+      return { success: false, error: 'Enter a pond name between 1 and 64 characters.' };
+    }
+    try {
+      await update(ref(database, `${ACCOUNTS_PATH}/${farmId}/devices/${deviceId}`), { name });
+      setCurrentAccount((previous) => previous
+        ? {
+          ...previous,
+          devices: {
+            ...previous.devices,
+            [deviceId]: { ...previous.devices?.[deviceId], name },
+          },
+        }
+        : previous);
+      return { success: true };
+    } catch {
+      return { success: false, error: 'Could not update this pond name. Check your connection and try again.' };
+    }
+  };
+
+  const handleGetDeviceClaimCode = async (
+    deviceId: string,
+  ): Promise<{ success: true; claimCode: string } | { success: false; error: string }> => {
+    if (!farmId || !currentAccount?.devices?.[deviceId]) {
+      return { success: false, error: 'This device is not linked to your account.' };
+    }
+    try {
+      const claimSnapshot = await get(ref(database, `${DEVICE_CLAIMS_PATH}/${deviceId}`));
+      const claim = claimSnapshot.val() as { ownerUid?: string; claimCode?: string } | null;
+      if (claim?.ownerUid !== farmId || typeof claim.claimCode !== 'string' || !claim.claimCode) {
+        return { success: false, error: 'The private claim code is unavailable for this linked device.' };
+      }
+      return { success: true, claimCode: claim.claimCode };
+    } catch {
+      return { success: false, error: 'Could not load device information. Check your connection and database permissions.' };
     }
   };
 
@@ -700,12 +870,11 @@ export default function App() {
     if (
       key === 'smsNotifications' &&
       next.smsNotifications &&
-      savedPhone.length > 0 &&
-      !/^\+[1-9]\d{7,14}$/.test(savedPhone)
+      (!savedPhone || !/^\+[1-9]\d{7,14}$/.test(savedPhone))
     ) {
       Alert.alert(
-        'Update phone number',
-        'Save the recipient number in international format, including + and country code, before enabling SMS.',
+        'Add a phone number',
+        'Add a valid phone number in Account Profile before enabling SMS alerts.',
       );
       return;
     }
@@ -1015,7 +1184,7 @@ export default function App() {
 
   if (!authReady) {
     return (
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={styles.safeArea} edges={['top', 'right', 'bottom', 'left']}>
         <StatusBar style="dark" />
         <View style={{ alignItems: 'center', flex: 1, justifyContent: 'center' }}>
           <ActivityIndicator color="#078A95" size="large" />
@@ -1028,8 +1197,9 @@ export default function App() {
     if (authScreen === 'signup') {
       return (
         <SignupScreen
-          onSignUp={handleSignUp}
-          onNavigateSignIn={() => setAuthScreen('login')}
+          onVerifyGoogle={handleVerifyGoogleForSignUp}
+          onCreateAccount={handleCreateAccount}
+          onNavigateSignIn={handleLeaveSignUp}
         />
       );
     }
@@ -1042,7 +1212,7 @@ export default function App() {
   }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'right', 'bottom', 'left']}>
       <StatusBar style="dark" />
 
       <View style={styles.screenContainer}>
@@ -1069,7 +1239,7 @@ export default function App() {
             isLive={isLive}
             lastUpdated={lastUpdated}
             hasAlert={hasAlert}
-            farmName={currentAccount?.farmName ?? 'Pond one'}
+            greetingName={[currentAccount?.firstName, currentAccount?.lastName].filter(Boolean).join(' ') || 'there'}
             deviceName={selectedDevice?.name ?? null}
             devices={managedDevices}
             selectedDeviceId={selectedDeviceId}
@@ -1095,10 +1265,14 @@ export default function App() {
         {!showCalibrationScreen && activeTab === 'history' && <HistoryScreen logs={historyLogs} isLoading={historyLoading} />}
         {!showCalibrationScreen && activeTab === 'settings' && (
           <SettingsScreen
-            farmName={currentAccount?.farmName ?? 'Pond one'}
             devices={managedDevices}
             selectedDeviceId={selectedDeviceId}
             accountEmail={currentAccount?.email ?? ''}
+            firstName={currentAccount?.firstName ?? ''}
+            lastName={currentAccount?.lastName ?? ''}
+            countryCode={currentAccount?.countryCode ?? 'PH'}
+            countryName={currentAccount?.countryName ?? 'Philippines'}
+            countryCallingCode={currentAccount?.countryCallingCode ?? '63'}
             phoneNumber={currentAccount?.phoneNumber ?? ''}
             reading={reading}
             lastUpdated={lastUpdated}
@@ -1107,8 +1281,10 @@ export default function App() {
             focusSmsSettings={focusSmsSettings}
             onTogglePreference={togglePreference}
             onSmsSettingsFocused={() => setFocusSmsSettings(false)}
-            onUpdateFarmProfile={handleUpdateFarmProfile}
+            onUpdateAccountProfile={handleUpdateAccountProfile}
             onClaimDevice={handleClaimDevice}
+            onUpdateDeviceName={handleUpdateDeviceName}
+            onGetDeviceClaimCode={handleGetDeviceClaimCode}
             onSelectDevice={handleSelectDevice}
             onUnlinkDevice={handleUnlinkDevice}
             onLogout={handleLogout}
@@ -1131,5 +1307,13 @@ export default function App() {
         hasAlert={hasAlert}
       />
     </SafeAreaView>
+  );
+}
+
+export default function App() {
+  return (
+    <SafeAreaProvider>
+      <AppContent />
+    </SafeAreaProvider>
   );
 }
