@@ -57,6 +57,31 @@
           ".read": "auth != null && root.child('deviceClaims').child($deviceId).child('ownerUid').val() === auth.uid",
           ".write": "auth != null && root.child('deviceConfig').child($deviceId).child('authUid').val() === auth.uid"
         },
+        "serial_monitor": {
+          ".read": "auth != null && root.child('deviceClaims').child($deviceId).child('ownerUid').val() === auth.uid",
+          ".write": "auth != null && root.child('deviceConfig').child($deviceId).child('authUid').val() === auth.uid",
+          ".validate": "newData.hasChildren(['bootId', 'entries'])",
+          "bootId": {
+            ".validate": "newData.isString() && newData.val().length <= 80"
+          },
+          "entries": {
+            "$entryIndex": {
+              ".validate": "($entryIndex === '0' || $entryIndex === '1' || $entryIndex === '2' || $entryIndex === '3' || $entryIndex === '4' || $entryIndex === '5' || $entryIndex === '6' || $entryIndex === '7' || $entryIndex === '8' || $entryIndex === '9') && newData.hasChildren(['id', 'uptimeMs', 'message'])",
+              "id": {
+                ".validate": "newData.isString() && newData.val().length <= 100"
+              },
+              "uptimeMs": {
+                ".validate": "newData.isNumber()"
+              },
+              "message": {
+                ".validate": "newData.isString() && newData.val().length <= 180"
+              }
+            }
+          },
+          "$other": {
+            ".validate": false
+          }
+        },
         "sensor_history": {
           ".read": "auth != null && root.child('deviceClaims').child($deviceId).child('ownerUid').val() === auth.uid",
           ".write": "auth != null && root.child('deviceClaims').child($deviceId).child('ownerUid').val() === auth.uid"

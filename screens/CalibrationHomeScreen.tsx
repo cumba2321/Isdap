@@ -7,6 +7,7 @@ import {
   CalibrationMethod,
   CalibrationPoint,
   CalibratableMetricKey,
+  DeviceSerialLog,
   PondReading,
   SensorCalibrations,
   SensorVoltages,
@@ -68,6 +69,7 @@ const calibrationOptions: Record<CalibratableMetricKey, CalibrationOption[]> = {
 type CalibrationScreenProps = {
   deviceName: string | null;
   deviceId: string | null;
+  firmwareSerialLogs: DeviceSerialLog[];
   reading: PondReading;
   rawReading: PondReading;
   voltages: SensorVoltages;
@@ -99,6 +101,7 @@ const labels: Record<CalibratableMetricKey, string> = {
 export default function CalibrationScreen({
   deviceName,
   deviceId,
+  firmwareSerialLogs,
   reading,
   rawReading,
   voltages,
@@ -131,7 +134,7 @@ export default function CalibrationScreen({
   const [temperatureNotice, setTemperatureNotice] = useState<string | null>(null);
   const [savingTemperature, setSavingTemperature] = useState(false);
   const lastSampleAt = useRef<number | null>(null);
-  const lastMonitorSampleAt = useRef<number | null>(null);
+  const seenSerialLogIds = useRef(new Set<string>());
   const showingTemperature = selectedIndex === calibrationMetrics.length;
   const selectedKey = calibrationMetrics[selectedIndex % calibrationMetrics.length];
   const metric = metrics.find((candidate) => candidate.key === selectedKey)!;
@@ -185,20 +188,29 @@ export default function CalibrationScreen({
   }, [voltageUpdatedAt, voltages]);
 
   useEffect(() => {
-    if (!serialMonitorOpen || !isLive || voltageUpdatedAt === null) return;
-    if (lastMonitorSampleAt.current === voltageUpdatedAt) return;
+    if (!serialMonitorOpen) return;
 
-    lastMonitorSampleAt.current = voltageUpdatedAt;
-    const timestamp = new Date(voltageUpdatedAt).toLocaleString();
-    const line = `[${timestamp}] RX /live_data temp=${formatValue(rawReading.temp, 'temp')} C | pH=${formatValue(rawReading.ph, 'ph')} | DO=${formatValue(rawReading.do, 'do')} mg/L | EC=${formatValue(rawReading.ec, 'ec')} mS/cm | TDS=${formatValue(rawReading.tds, 'tds')} ppm | NTU=${formatValue(rawReading.turbidity, 'turbidity')}`;
-    setSerialMonitorLines((previous) => [...previous, line].slice(-maxMonitorLines));
-  }, [isLive, rawReading, serialMonitorOpen, voltageUpdatedAt]);
+    const newLines: string[] = [];
+    firmwareSerialLogs.forEach((entry) => {
+      if (seenSerialLogIds.current.has(entry.id)) return;
+      seenSerialLogIds.current.add(entry.id);
+      newLines.push(`[${new Date().toLocaleString()}] ${entry.message}`);
+    });
+    while (seenSerialLogIds.current.size > maxMonitorLines) {
+      const oldestId = seenSerialLogIds.current.values().next().value;
+      if (oldestId === undefined) break;
+      seenSerialLogIds.current.delete(oldestId);
+    }
+    if (newLines.length > 0) {
+      setSerialMonitorLines((previous) => [...previous, ...newLines].slice(-maxMonitorLines));
+    }
+  }, [firmwareSerialLogs, serialMonitorOpen]);
 
   const closeSerialMonitor = () => {
+    seenSerialLogIds.current = new Set(firmwareSerialLogs.map((entry) => entry.id));
     setSerialMonitorOpen(false);
     setSerialMonitorLines([]);
     setSerialMonitorNotice(null);
-    lastMonitorSampleAt.current = null;
   };
 
   const copySerialMonitor = async () => {
@@ -433,7 +445,8 @@ export default function CalibrationScreen({
         {!serialMonitorOpen ? (
           <Pressable
             onPress={() => {
-              lastMonitorSampleAt.current = null;
+              seenSerialLogIds.current = new Set(firmwareSerialLogs.map((entry) => entry.id));
+              setSerialMonitorLines([]);
               setSerialMonitorNotice(null);
               setSerialMonitorOpen(true);
             }}
@@ -467,7 +480,7 @@ export default function CalibrationScreen({
               </Pressable>
             </View>
             <Text style={screenStyles.monitorDescription}>
-              Live sensor readings received by the app. Closing the monitor clears this session’s data.
+              Firmware messages and sensor readings. Closing the monitor clears this session’s data.
             </Text>
             <ScrollView
               style={screenStyles.monitorLog}
@@ -476,7 +489,7 @@ export default function CalibrationScreen({
             >
               {serialMonitorLines.length === 0 ? (
                 <Text style={screenStyles.monitorEmpty}>
-                  {isLive ? 'Waiting for the next device update…' : 'Waiting for a live device connection…'}
+                  Waiting for firmware serial output…
                 </Text>
               ) : serialMonitorLines.map((line, index) => (
                 <Text key={`${index}-${line}`} selectable style={screenStyles.monitorLine}>{line}</Text>
@@ -497,6 +510,7 @@ export default function CalibrationScreen({
               </Pressable>
               <Pressable
                 onPress={() => {
+                  seenSerialLogIds.current = new Set(firmwareSerialLogs.map((entry) => entry.id));
                   setSerialMonitorLines([]);
                   setSerialMonitorNotice(null);
                 }}

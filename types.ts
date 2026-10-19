@@ -11,6 +11,12 @@ export type SensorLog = PondReading & {
   id: string;
   recordedAt: number;
 };
+
+export type DeviceSerialLog = {
+  id: string;
+  message: string;
+  uptimeMs: number;
+};
  
 export type TabKey = 'dashboard' | 'history' | 'alert' | 'calibration' | 'settings';
 

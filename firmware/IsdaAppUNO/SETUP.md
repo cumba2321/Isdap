@@ -1,6 +1,6 @@
 # IsdaApp UNO R4 WiFi secure device setup
 
-This firmware signs in as a dedicated Firebase Authentication user. Realtime Database rules then let that device account write only its own `live_data`, while app users can read it only while they own the device claim.
+This firmware signs in as a dedicated Firebase Authentication user. Realtime Database rules let that device account write only its own `live_data` and bounded `serial_monitor` snapshot, while app users can read them only while they own the device claim.
 
 ## Provision the device in Firebase
 
@@ -38,14 +38,14 @@ This firmware signs in as a dedicated Firebase Authentication user. Realtime Dat
 
    `deviceSecrets` is administrative and stays private. The device UID can read its own device configuration. After a user claims the device, the app writes the shared account SMS recipient and alert preferences to that device's `alertNumber`, `smsEnabled`, `smsCritical`, and `smsWarning` fields under the published rules.
 
-5. Do not publish the restrictive rules yet. First upload the authenticated firmware below so the board is ready to sign in and write to its per-device path.
+5. Do not publish the restrictive rules yet. First upload the authenticated firmware below so the board is ready to sign in and write to its per-device paths.
 
 ## Prepare the sketch
 
 1. Copy `Secrets.h.example` to `Secrets.h` in this sketch folder. The real `Secrets.h` is git-ignored.
 2. Fill in the ID, Firebase device-account email/password, and Firebase Web API key from `firebaseConfig.ts`. Keep the device password private and never commit `Secrets.h`.
 3. Open `IsdaAppUNO.ino` in Arduino IDE, install the existing OneWire and DallasTemperature libraries, choose **Arduino UNO R4 WiFi** and its port, then compile and upload.
-4. Open Serial Monitor at 115200 baud. A successful setup should show that the device account signed in and readings are being uploaded.
+4. Open Serial Monitor at 115200 baud. A successful setup should show that the device account signed in and readings are being uploaded. Firmware serial messages and sensor summaries are also published to the app's Serial Monitor; Firebase keeps only the most recent 10 messages for each device.
 5. In **Realtime Database → Rules**, replace the rules with the contents of the repository's `database.rules.json` and publish. Existing root-level/public rules must not remain above or alongside these rules.
 
 ## Claim and transfer
@@ -57,4 +57,4 @@ This firmware signs in as a dedicated Firebase Authentication user. Realtime Dat
 - In **Settings → Notifications**, enabling SMS reveals the shared recipient number field. Save an international-format number such as `+639171234567`; the app updates every device linked to that account. The firmware refreshes these settings from Firebase about once per minute, so a changed number or SMS preference takes effect without uploading new firmware.
 - The SIM800L must have an active SIM with SMS service, sufficient credit, and a suitable stable power supply. The app cannot provide the carrier service or SIM balance.
 
-If users already have a copy of an older sketch, it continues writing to `/live_data`; update and upload this authenticated sketch before publishing the restrictive database rules. The app now reads per-device paths and deliberately does not automatically attach newly created accounts to any sensor.
+If users already have a copy of an older sketch, it continues writing only to `/live_data`; update and upload this authenticated sketch before publishing the restrictive database rules. The app now reads per-device paths and deliberately does not automatically attach newly created accounts to any sensor.

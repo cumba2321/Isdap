@@ -32,8 +32,21 @@ WiFiServer server(80);
 WiFiSSLClient sslClient;
 unsigned long lastUploadTime = 0;
 const unsigned long uploadInterval = 5000;
+unsigned long lastSerialLogUpload = 0;
+const unsigned long serialLogUploadInterval = 10000;
 unsigned long lastDeviceConfigFetch = 0;
 const unsigned long deviceConfigFetchInterval = 60000;
+const uint8_t maxSerialLogEntries = 10;
+struct SerialLogEntry {
+  uint32_t sequence;
+  unsigned long uptimeMs;
+  String message;
+};
+SerialLogEntry serialLogEntries[maxSerialLogEntries];
+uint8_t serialLogCount = 0;
+uint32_t serialLogSequence = 0;
+String serialLogBootId = "";
+void logSerial(const String& message);
 
 // EEPROM layout: SSID (max 32 chars + null) at 0, password (max 63 chars + null) at 64
 const int ssidAddress = 0;
@@ -128,7 +141,7 @@ String urlDecode(const String& in) {
 // ---------------------------------------------------------------
 bool connectWiFi(const String& s, const String& p) {
   for (int attempt = 1; attempt <= 3; attempt++) {
-    Serial.println("[WiFi] Attempt " + String(attempt) + " to '" + s + "' (pass len " + String(p.length()) + ")");
+    logSerial("[WiFi] Attempt " + String(attempt) + " to '" + s + "' (pass len " + String(p.length()) + ")");
     WiFi.disconnect();
     WiFi.begin(s.c_str(), p.c_str());
 
@@ -143,10 +156,10 @@ bool connectWiFi(const String& s, const String& p) {
       while (WiFi.localIP() == IPAddress(0, 0, 0, 0) && millis() - t < 5000) {
         delay(100);
       }
-      Serial.println("[WiFi] Connected, IP: " + WiFi.localIP().toString());
+      logSerial("[WiFi] Connected, IP: " + WiFi.localIP().toString());
       return true;
     }
-    Serial.println("[WiFi] Failed, status = " + String(WiFi.status()));
+    logSerial("[WiFi] Failed, status = " + String(WiFi.status()));
   }
   return false;
 }
@@ -168,6 +181,37 @@ String jsonEscape(const String& value) {
     }
   }
   return escaped;
+}
+
+void logSerial(const String& message) {
+  Serial.println(message);
+
+  String storedMessage = message;
+  if (storedMessage.length() > 180) storedMessage = storedMessage.substring(0, 180);
+  if (serialLogCount == maxSerialLogEntries) {
+    for (uint8_t i = 1; i < maxSerialLogEntries; i++) {
+      serialLogEntries[i - 1] = serialLogEntries[i];
+    }
+    serialLogCount--;
+  }
+
+  SerialLogEntry& entry = serialLogEntries[serialLogCount++];
+  entry.sequence = ++serialLogSequence;
+  entry.uptimeMs = millis();
+  entry.message = storedMessage;
+}
+
+String serialLogJson() {
+  String json = "{\"bootId\":\"" + jsonEscape(serialLogBootId) + "\",\"entries\":[";
+  for (uint8_t i = 0; i < serialLogCount; i++) {
+    if (i > 0) json += ",";
+    const SerialLogEntry& entry = serialLogEntries[i];
+    json += "{\"id\":\"" + jsonEscape(serialLogBootId) + "-" + String(entry.sequence) +
+      "\",\"uptimeMs\":" + String(entry.uptimeMs) +
+      ",\"message\":\"" + jsonEscape(entry.message) + "\"}";
+  }
+  json += "]}";
+  return json;
 }
 
 String readJsonString(const String& json, const char* key) {
@@ -284,7 +328,7 @@ bool readHttpResponse(WiFiSSLClient& client, String& statusLine, String& body) {
 bool sendFirebaseAuthRequest(const char* host, const String& requestPath, const String& requestBody, String& responseBody) {
   WiFiSSLClient authClient;
   if (!authClient.connect(host, 443)) {
-    Serial.println("[Firebase Auth] HTTPS connection failed.");
+    logSerial("[Firebase Auth] HTTPS connection failed.");
     return false;
   }
 
@@ -303,7 +347,7 @@ bool sendFirebaseAuthRequest(const char* host, const String& requestPath, const 
   String statusLine;
   bool success = readHttpResponse(authClient, statusLine, responseBody);
   if (!success) {
-    Serial.println("[Firebase Auth] Authentication request was rejected or timed out.");
+    logSerial("[Firebase Auth] Authentication request was rejected or timed out.");
   }
   return success;
 }
@@ -319,11 +363,11 @@ bool signInDevice() {
   firebaseIdToken = readJsonString(responseBody, "idToken");
   firebaseRefreshToken = readJsonString(responseBody, "refreshToken");
   if (firebaseIdToken.length() == 0 || firebaseRefreshToken.length() == 0) {
-    Serial.println("[Firebase Auth] Token response was incomplete.");
+    logSerial("[Firebase Auth] Token response was incomplete.");
     return false;
   }
   lastTokenRefresh = millis();
-  Serial.println("[Firebase Auth] Device account signed in.");
+  logSerial("[Firebase Auth] Device account signed in.");
   return true;
 }
 
@@ -343,7 +387,7 @@ bool refreshDeviceToken() {
   firebaseIdToken = newIdToken;
   firebaseRefreshToken = newRefreshToken;
   lastTokenRefresh = millis();
-  Serial.println("[Firebase Auth] Device token refreshed.");
+  logSerial("[Firebase Auth] Device token refreshed.");
   return true;
 }
 
@@ -357,7 +401,7 @@ void fetchPhoneNumberFromFirebase() {
   if (!ensureDeviceToken()) return;
   lastDeviceConfigFetch = millis();
   if (!sslClient.connect(firebaseHost, 443)) {
-    Serial.println("[Firebase] Could not fetch device settings.");
+    logSerial("[Firebase] Could not fetch device settings.");
     return;
   }
 
@@ -377,9 +421,9 @@ void fetchPhoneNumberFromFirebase() {
     smsNotificationsEnabled = readJsonBool(responseBody, "smsEnabled");
     smsCriticalEnabled = readJsonBool(responseBody, "smsCritical");
     smsWarningEnabled = readJsonBool(responseBody, "smsWarning");
-    Serial.println("[Firebase] SMS settings refreshed.");
+    logSerial("[Firebase] SMS settings refreshed.");
   } else {
-    Serial.println("[Firebase] Could not read device SMS settings.");
+    logSerial("[Firebase] Could not read device SMS settings.");
   }
 }
 
@@ -392,6 +436,7 @@ void setup() {
   tempSensor.begin();
   analogReadResolution(10);
   RTC.begin();
+  serialLogBootId = String(micros()) + "-" + String(analogRead(PH_PIN)) + "-" + String(analogRead(EC_PIN));
 
   if (WiFi.status() == WL_NO_MODULE) {
     while (true);
@@ -408,10 +453,10 @@ void setup() {
     WiFi.beginAP("IsdaApp_Setup");
     server.begin();
     portalActive = true;
-    Serial.println("[MODE: SETUP] Access Point started: IsdaApp_Setup");
+    logSerial("[MODE: SETUP] Access Point started: IsdaApp_Setup");
   } else {
     portalActive = false;
-    Serial.println("[MODE: CLOUD] Connected to Wi-Fi successfully.");
+    logSerial("[MODE: CLOUD] Connected to Wi-Fi successfully.");
     if (signInDevice()) fetchPhoneNumberFromFirebase();
   }
 }
@@ -443,10 +488,10 @@ void handlePortal() {
               writeEEPROM(passAddress, newPass, passMaxLen);
               saved = true;
 
-              Serial.println("Credentials saved via Portal! New SSID: " + newSSID +
+              logSerial("Credentials saved via Portal! New SSID: " + newSSID +
                              " (pass len " + String(newPass.length()) + ")");
             } else {
-              Serial.println("[Portal] Could not parse credentials (request too long or malformed).");
+              logSerial("[Portal] Could not parse credentials (request too long or malformed).");
             }
 
             client.println("HTTP/1.1 200 OK");
@@ -631,21 +676,21 @@ void evaluateThresholds() {
 // ---------------------------------------------------------------
 void pushToFirebase() {
   if (!ensureDeviceToken()) {
-    Serial.println("[Firebase] No valid device token; upload skipped.");
+    logSerial("[Firebase] No valid device token; upload skipped.");
     return;
   }
   if (!sslClient.connect(firebaseHost, 443)) {
-    Serial.println("[Firebase] Data connection failed.");
+    logSerial("[Firebase] Data connection failed.");
     return;
   }
 
-  String path = String("/devices/") + DEVICE_ID + "/live_data.json?auth=" + firebaseIdToken;
   String json = "{\"temp\":" + String(smoothedCalTempC, 2) +
     ",\"ph\":" + String(calculatedpH, 2) +
     ",\"do\":" + String(calculatedDO, 2) +
     ",\"ec\":" + String(calculatedEC, 2) +
     ",\"tds\":" + String(calculatedTDS, 0) +
     ",\"ntu\":" + String(calculatedNTU, 1) + "}";
+  String path = String("/devices/") + DEVICE_ID + "/live_data.json?auth=" + firebaseIdToken;
 
   sslClient.print("PUT ");
   sslClient.print(path);
@@ -662,11 +707,43 @@ void pushToFirebase() {
   String statusLine;
   String responseBody;
   if (readHttpResponse(sslClient, statusLine, responseBody)) {
-    Serial.println("[Firebase] Readings uploaded for " + String(DEVICE_ID));
+    logSerial("[Firebase] Readings uploaded for " + String(DEVICE_ID));
   } else {
-    Serial.println("[Firebase] Upload failed. Check Firebase rules and device account provisioning.");
-    Serial.println(statusLine);
-    Serial.println(responseBody);
+    logSerial("[Firebase] Upload failed. Check Firebase rules and device account provisioning.");
+    logSerial(statusLine);
+    logSerial(responseBody);
+  }
+}
+
+void pushSerialMonitorToFirebase() {
+  if (serialLogCount == 0 || !ensureDeviceToken()) return;
+  if (!sslClient.connect(firebaseHost, 443)) {
+    logSerial("[Firebase] Serial monitor connection failed.");
+    return;
+  }
+
+  String path = String("/devices/") + DEVICE_ID + "/serial_monitor.json?auth=" + firebaseIdToken;
+  String json = serialLogJson();
+  sslClient.print("PUT ");
+  sslClient.print(path);
+  sslClient.println(" HTTP/1.1");
+  sslClient.print("Host: ");
+  sslClient.println(firebaseHost);
+  sslClient.println("Connection: close");
+  sslClient.println("Content-Type: application/json");
+  sslClient.print("Content-Length: ");
+  sslClient.println(json.length());
+  sslClient.println();
+  sslClient.print(json);
+
+  String statusLine;
+  String responseBody;
+  if (readHttpResponse(sslClient, statusLine, responseBody)) {
+    logSerial("[Firebase] Serial monitor logs uploaded.");
+  } else {
+    logSerial("[Firebase] Serial monitor upload failed.");
+    logSerial(statusLine);
+    logSerial(responseBody);
   }
 }
 
@@ -682,7 +759,7 @@ void loop() {
 
     // If Wi-Fi dropped, try to reconnect before resorting to a reset
     if (WiFi.status() != WL_CONNECTED) {
-      Serial.println("[WiFi] Connection lost, reconnecting...");
+      logSerial("[WiFi] Connection lost, reconnecting...");
       if (!connectWiFi(ssid, pass)) {
         NVIC_SystemReset();
       }
@@ -693,8 +770,16 @@ void loop() {
         fetchPhoneNumberFromFirebase();
       }
       if (millis() - lastUploadTime > uploadInterval) {
+        logSerial("[Sensors] Temp=" + String(smoothedCalTempC, 2) + " C | pH=" +
+          String(calculatedpH, 2) + " | DO=" + String(calculatedDO, 2) +
+          " mg/L | EC=" + String(calculatedEC, 2) + " mS/cm | TDS=" +
+          String(calculatedTDS, 0) + " ppm | NTU=" + String(calculatedNTU, 1));
         pushToFirebase();
         lastUploadTime = millis();
+      }
+      if (millis() - lastSerialLogUpload >= serialLogUploadInterval) {
+        pushSerialMonitorToFirebase();
+        lastSerialLogUpload = millis();
       }
     }
     delay(1000);

@@ -32,6 +32,7 @@ import {
   CalibrationMethod,
   CalibrationPoint,
   CalibratableMetricKey,
+  DeviceSerialLog,
   ManagedDevice,
   MetricKey,
   NotificationPreferences,
@@ -119,6 +120,7 @@ function AppContent() {
   const [clearedAlertsAt, setClearedAlertsAt] = useState<number | null>(null);
   const [historyLogs, setHistoryLogs] = useState<SensorLog[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
+  const [deviceSerialLogs, setDeviceSerialLogs] = useState<DeviceSerialLog[]>([]);
   const [pushPermissionGranted, setPushPermissionGranted] = useState(false);
   const hasRestoredInitialAuth = useRef(false);
   const pendingSignupUid = useRef<string | null>(null);
@@ -1031,6 +1033,41 @@ function AppContent() {
     return unsubscribe;
   }, [farmId, preferences.autoRefresh, selectedDeviceId]);
 
+  useEffect(() => {
+    if (!showCalibrationScreen || !farmId || !selectedDeviceId) {
+      setDeviceSerialLogs([]);
+      return;
+    }
+
+    const serialMonitorRef = ref(database, `${DEVICES_PATH}/${selectedDeviceId}/serial_monitor`);
+    const unsubscribe = onValue(
+      serialMonitorRef,
+      (snapshot) => {
+        const data = snapshot.val() as
+          | { entries?: Record<string, Partial<DeviceSerialLog>> | DeviceSerialLog[] }
+          | null;
+        const entries = data?.entries;
+        const values = Array.isArray(entries) ? entries : Object.values(entries ?? {});
+        setDeviceSerialLogs(values.flatMap((entry) => (
+          typeof entry?.id === 'string' &&
+          typeof entry.message === 'string' &&
+          typeof entry.uptimeMs === 'number' &&
+          Number.isFinite(entry.uptimeMs)
+            ? [{ id: entry.id, message: entry.message, uptimeMs: entry.uptimeMs }]
+            : []
+        )).slice(-12));
+      },
+      () => {
+        setDeviceSerialLogs([]);
+        Alert.alert(
+          'Serial monitor unavailable',
+          'Could not read firmware logs. Check your connection and publish the updated Firebase database rules.',
+        );
+      },
+    );
+    return unsubscribe;
+  }, [farmId, selectedDeviceId, showCalibrationScreen]);
+
   // Track the first moment each metric started breaching its safe range, so
   // the Alerts screen can show "X minutes/hours ago" per alert.
   useEffect(() => {
@@ -1220,6 +1257,7 @@ function AppContent() {
           <CalibrationHomeScreen
             deviceName={selectedDevice?.name ?? null}
             deviceId={selectedDeviceId}
+            firmwareSerialLogs={deviceSerialLogs}
             reading={reading}
             rawReading={deviceReading}
             voltages={sensorVoltages}
