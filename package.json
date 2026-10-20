@@ -18,8 +18,10 @@
     "react": "19.2.3",
     "react-native": "0.86.3",
     "react-native-country-picker-modal": "^3.0.0",
+    "react-native-qrcode-svg": "^6.3.26",
     "react-native-safe-area-context": "~5.7.0",
-    "xlsx": "^0.18.5"
+    "react-native-svg": "15.15.4",
+    "xlsx-js-style": "^1.2.0"
   },
   "devDependencies": {
     "@types/react": "~19.2.4",

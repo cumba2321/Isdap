@@ -22,7 +22,8 @@ This firmware signs in as a dedicated Firebase Authentication user. Realtime Dat
          "alertNumber": "",
          "smsEnabled": false,
          "smsCritical": false,
-         "smsWarning": false
+         "smsWarning": false,
+         "serialLogClear": ""
        }
      }
    }
@@ -54,7 +55,8 @@ This firmware signs in as a dedicated Firebase Authentication user. Realtime Dat
 - They enter the device ID and private claim code, or paste the QR payload into the Device ID field. The app claims the database record atomically; a device already owned by another UID cannot be claimed.
 - Unlinking removes the owner's claim and app-list entry in one Realtime Database update. The board continues uploading, and another signed-in user with the private code can claim it.
 - The device ID is public routing information, not a credential. The claim code and device Firebase password are credentials.
-- In **Settings → Notifications**, enabling SMS reveals the shared recipient number field. Save an international-format number such as `+639171234567`; the app updates every device linked to that account. The firmware refreshes these settings from Firebase about once per minute, so a changed number or SMS preference takes effect without uploading new firmware.
+- In **Settings → Notifications**, enabling SMS reveals the shared recipient number field. The app stores and sends the recipient in international format, such as `+639171234567` (the local `0917...` form is converted to `+63917...`). The firmware also normalizes Philippine local numbers beginning with `09` to `+639` when reading the setting, and accepts international numbers beginning with `+`. The app updates every device linked to that account. The firmware refreshes these settings from Firebase about once per minute, so a changed number or SMS preference takes effect without uploading new firmware.
+- Clearing the Serial Monitor in the app deletes its Firebase snapshot and records a clear marker for the firmware. The board removes the cleared entries from its in-memory log buffer when it next refreshes device settings (within about one minute); later firmware messages are stored normally. Upload the updated firmware and publish the updated database rules for this behavior.
 - The SIM800L must have an active SIM with SMS service, sufficient credit, and a suitable stable power supply. The app cannot provide the carrier service or SIM balance.
 
 If users already have a copy of an older sketch, it continues writing only to `/live_data`; update and upload this authenticated sketch before publishing the restrictive database rules. The app now reads per-device paths and deliberately does not automatically attach newly created accounts to any sensor.

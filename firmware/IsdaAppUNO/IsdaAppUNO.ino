@@ -254,6 +254,28 @@ bool readJsonBool(const String& json, const char* key) {
   return json.substring(valueStart, valueStart + 4) == "true";
 }
 
+void applySerialLogClearMarkers(String markers) {
+  int markerStart = 0;
+  while (markerStart < markers.length()) {
+    int markerEnd = markers.indexOf(',', markerStart);
+    if (markerEnd < 0) markerEnd = markers.length();
+    String marker = markers.substring(markerStart, markerEnd);
+    int separator = marker.lastIndexOf(':');
+    if (separator > 0 && marker.substring(0, separator) == serialLogBootId) {
+      uint32_t clearThrough = (uint32_t)marker.substring(separator + 1).toInt();
+      uint8_t retained = 0;
+      for (uint8_t i = 0; i < serialLogCount; i++) {
+        if (serialLogEntries[i].sequence > clearThrough) {
+          if (retained != i) serialLogEntries[retained] = serialLogEntries[i];
+          retained++;
+        }
+      }
+      serialLogCount = retained;
+    }
+    markerStart = markerEnd + 1;
+  }
+}
+
 bool readHttpResponse(WiFiSSLClient& client, String& statusLine, String& body) {
   unsigned long startedAt = millis();
   statusLine = client.readStringUntil('\n');
@@ -397,6 +419,27 @@ bool ensureDeviceToken() {
   return true;
 }
 
+String normalizeSmsPhoneNumber(String phoneNumber) {
+  phoneNumber.trim();
+  if (phoneNumber.length() == 0) return "";
+
+  String digits = "";
+  for (unsigned int i = 0; i < phoneNumber.length(); i++) {
+    if (isDigit(phoneNumber[i])) digits += phoneNumber[i];
+  }
+
+  if (phoneNumber.startsWith("+")) return String("+") + digits;
+  if (digits.startsWith("00")) return String("+") + digits.substring(2);
+  if (digits.startsWith("63")) return String("+") + digits;
+  if (digits.startsWith("09") && digits.length() == 11) {
+    return String("+63") + digits.substring(1);
+  }
+  if (digits.startsWith("9") && digits.length() == 10) {
+    return String("+63") + digits;
+  }
+  return phoneNumber;
+}
+
 void fetchPhoneNumberFromFirebase() {
   if (!ensureDeviceToken()) return;
   lastDeviceConfigFetch = millis();
@@ -417,10 +460,11 @@ void fetchPhoneNumberFromFirebase() {
   String statusLine;
   String responseBody;
   if (readHttpResponse(sslClient, statusLine, responseBody)) {
-    alertPhoneNumber = readJsonString(responseBody, "alertNumber");
+    alertPhoneNumber = normalizeSmsPhoneNumber(readJsonString(responseBody, "alertNumber"));
     smsNotificationsEnabled = readJsonBool(responseBody, "smsEnabled");
     smsCriticalEnabled = readJsonBool(responseBody, "smsCritical");
     smsWarningEnabled = readJsonBool(responseBody, "smsWarning");
+    applySerialLogClearMarkers(readJsonString(responseBody, "serialLogClear"));
     logSerial("[Firebase] SMS settings refreshed.");
   } else {
     logSerial("[Firebase] Could not read device SMS settings.");

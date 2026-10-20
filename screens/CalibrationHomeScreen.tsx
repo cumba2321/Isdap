@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Modal, Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import { formatValue, metrics } from '../metrics';
 import {
@@ -70,6 +71,7 @@ type CalibrationScreenProps = {
   deviceName: string | null;
   deviceId: string | null;
   firmwareSerialLogs: DeviceSerialLog[];
+  onClearSerialMonitor: () => Promise<AuthResult>;
   reading: PondReading;
   rawReading: PondReading;
   voltages: SensorVoltages;
@@ -102,6 +104,7 @@ export default function CalibrationScreen({
   deviceName,
   deviceId,
   firmwareSerialLogs,
+  onClearSerialMonitor,
   reading,
   rawReading,
   voltages,
@@ -114,10 +117,12 @@ export default function CalibrationScreen({
   onSaveTemperature,
   onClearTemperature,
 }: CalibrationScreenProps) {
+  const insets = useSafeAreaInsets();
   const [selectedIndex, setSelectedIndex] = useState(calibrationMetrics.length);
   const [serialMonitorOpen, setSerialMonitorOpen] = useState(false);
   const [serialMonitorLines, setSerialMonitorLines] = useState<string[]>([]);
   const [serialMonitorNotice, setSerialMonitorNotice] = useState<string | null>(null);
+  const [serialMonitorClearing, setSerialMonitorClearing] = useState(false);
   const [voltageSamples, setVoltageSamples] = useState<Partial<Record<CalibratableMetricKey, number[]>>>({});
   const [now, setNow] = useState(Date.now());
   const [calibrationOpen, setCalibrationOpen] = useState(false);
@@ -214,13 +219,42 @@ export default function CalibrationScreen({
   };
 
   const copySerialMonitor = async () => {
-    if (serialMonitorLines.length === 0) return;
+    if (serialMonitorLines.length === 0) {
+      setSerialMonitorNotice('No serial output to copy yet.');
+      return;
+    }
     try {
       await Clipboard.setStringAsync(serialMonitorLines.join('\n'));
       setSerialMonitorNotice('Monitor data copied to the clipboard.');
     } catch {
       Alert.alert('Copy failed', 'Could not copy the monitor data. Please try again.');
     }
+  };
+
+  const clearSerialMonitor = () => {
+    Alert.alert(
+      'Clear serial monitor?',
+      'This clears the current session and deletes saved firmware logs from Firebase. The device will keep recording new messages.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: async () => {
+            setSerialMonitorClearing(true);
+            const result = await onClearSerialMonitor();
+            setSerialMonitorClearing(false);
+            if (!result.success) {
+              Alert.alert('Could not clear serial monitor', result.error);
+              return;
+            }
+            seenSerialLogIds.current = new Set(firmwareSerialLogs.map((entry) => entry.id));
+            setSerialMonitorLines([]);
+            setSerialMonitorNotice('Saved monitor logs cleared.');
+          },
+        },
+      ],
+    );
   };
 
   const resetCalibration = (key: CalibratableMetricKey) => {
@@ -445,7 +479,7 @@ export default function CalibrationScreen({
         {!serialMonitorOpen ? (
           <Pressable
             onPress={() => {
-              seenSerialLogIds.current = new Set(firmwareSerialLogs.map((entry) => entry.id));
+              seenSerialLogIds.current = new Set();
               setSerialMonitorLines([]);
               setSerialMonitorNotice(null);
               setSerialMonitorOpen(true);
@@ -460,10 +494,11 @@ export default function CalibrationScreen({
           animationType="slide"
           onRequestClose={closeSerialMonitor}
           presentationStyle="fullScreen"
+          navigationBarTranslucent={false}
           statusBarTranslucent
           visible={serialMonitorOpen}
         >
-          <View style={screenStyles.monitorScreen}>
+          <View style={[screenStyles.monitorScreen, { paddingBottom: Math.max(insets.bottom, 24) + 16 }]}>
             <StatusBar barStyle="light-content" backgroundColor="#102127" />
             <View style={screenStyles.monitorHeader}>
               <View style={screenStyles.monitorTitleGroup}>
@@ -498,10 +533,8 @@ export default function CalibrationScreen({
             <View style={screenStyles.monitorActions}>
               <Pressable
                 onPress={copySerialMonitor}
-                disabled={serialMonitorLines.length === 0}
                 style={({ pressed }) => [
                   screenStyles.monitorAction,
-                  serialMonitorLines.length === 0 && screenStyles.monitorActionDisabled,
                   pressed && screenStyles.pressed,
                 ]}
                 accessibilityRole="button"
@@ -509,20 +542,16 @@ export default function CalibrationScreen({
                 <Text style={screenStyles.monitorActionText}>COPY</Text>
               </Pressable>
               <Pressable
-                onPress={() => {
-                  seenSerialLogIds.current = new Set(firmwareSerialLogs.map((entry) => entry.id));
-                  setSerialMonitorLines([]);
-                  setSerialMonitorNotice(null);
-                }}
-                disabled={serialMonitorLines.length === 0}
+                onPress={clearSerialMonitor}
+                disabled={serialMonitorClearing}
                 style={({ pressed }) => [
                   screenStyles.monitorAction,
-                  serialMonitorLines.length === 0 && screenStyles.monitorActionDisabled,
+                  serialMonitorClearing && screenStyles.monitorActionDisabled,
                   pressed && screenStyles.pressed,
                 ]}
                 accessibilityRole="button"
               >
-                <Text style={screenStyles.monitorActionText}>CLEAR</Text>
+                <Text style={screenStyles.monitorActionText}>{serialMonitorClearing ? 'CLEARING…' : 'CLEAR'}</Text>
               </Pressable>
             </View>
             {serialMonitorNotice ? (
@@ -910,7 +939,6 @@ const screenStyles = StyleSheet.create({
   monitorScreen: {
     backgroundColor: '#102127',
     flex: 1,
-    paddingBottom: 20,
     paddingHorizontal: 16,
     paddingTop: (StatusBar.currentHeight ?? 0) + 16,
   },
@@ -944,7 +972,7 @@ const screenStyles = StyleSheet.create({
     justifyContent: 'center',
     minHeight: 36,
   },
-  monitorActionDisabled: { opacity: 0.45 },
+  monitorActionDisabled: { opacity: 0.5 },
   monitorActionText: { color: '#E8F1F2', fontSize: 10, fontWeight: '900', letterSpacing: 0.8 },
   monitorNotice: { color: '#8EE5B3', fontSize: 10, marginTop: 8 },
   sectionTitle: { alignSelf: 'stretch', color: '#172B33', fontSize: 19, fontWeight: '800', marginBottom: 12, marginTop: 18 },

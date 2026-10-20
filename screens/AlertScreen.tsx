@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
 import { formatValue } from '../metrics';
 import { styles } from '../styles';
-import { ActiveAlert } from '../types';
+import { ActiveAlert, AuthResult } from '../types';
 import { formatRelativeTime } from '../utils';
 
 type AlertScreenProps = {
@@ -11,7 +11,8 @@ type AlertScreenProps = {
   showCritical: boolean;
   showWarning: boolean;
   clearedAlertsAt: number | null;
-  onClearAll: () => void;
+  isClearing: boolean;
+  onClearAll: () => Promise<AuthResult>;
 };
 
 function getAlertTitle(alert: ActiveAlert) {
@@ -33,9 +34,32 @@ export default function AlertScreen({
   showCritical,
   showWarning,
   clearedAlertsAt,
+  isClearing,
   onClearAll,
 }: AlertScreenProps) {
   const [now, setNow] = useState(new Date());
+
+  const confirmClearAll = () => {
+    Alert.alert(
+      'Clear visible alerts?',
+      'This dismisses the current alerts and saves the dismissal to your account. Alerts can appear again if a reading returns to range and later becomes unsafe.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear alerts',
+          style: 'destructive',
+          onPress: async () => {
+            const result = await onClearAll();
+            if (result.success) {
+              Alert.alert('Alerts cleared', 'The current alert dismissal was saved to your account.');
+            } else {
+              Alert.alert('Could not clear alerts', result.error);
+            }
+          },
+        },
+      ],
+    );
+  };
 
   // Keep "x minutes ago" labels fresh without needing new sensor data.
   useEffect(() => {
@@ -194,17 +218,17 @@ export default function AlertScreen({
       )}
 
       <Pressable
-        onPress={onClearAll}
-        disabled={!hasDevice || !hasAlerts}
+        onPress={confirmClearAll}
+        disabled={!hasDevice || !hasAlerts || isClearing}
         accessibilityRole="button"
-        accessibilityState={{ disabled: !hasDevice || !hasAlerts }}
+        accessibilityState={{ disabled: !hasDevice || !hasAlerts || isClearing }}
         style={({ pressed }) => [
           styles.clearAllButton,
-          (!hasDevice || !hasAlerts) && styles.clearAllButtonDisabled,
+          (!hasDevice || !hasAlerts || isClearing) && styles.clearAllButtonDisabled,
           pressed && hasDevice && hasAlerts && styles.tabButtonPressed,
         ]}
       >
-        <Text style={styles.clearAllButtonText}>Clear visible alerts</Text>
+        <Text style={styles.clearAllButtonText}>{isClearing ? 'Saving…' : 'Clear visible alerts'}</Text>
       </Pressable>
     </ScrollView>
   );

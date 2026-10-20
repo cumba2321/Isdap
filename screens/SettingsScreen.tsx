@@ -3,6 +3,8 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import CountryPicker, { Country, CountryCode } from 'react-native-country-picker-modal';
 import { AsYouType, getCountryCallingCode, parsePhoneNumberFromString } from 'libphonenumber-js';
+import QRCode from 'react-native-qrcode-svg';
+import Svg, { Circle, Path } from 'react-native-svg';
 import {
   Alert,
   Modal,
@@ -17,7 +19,7 @@ import {
 import { formatValue, metrics } from '../metrics';
 import { styles } from '../styles';
 import { AuthResult, ManagedDevice, NotificationPreferences, PondReading, SensorLog } from '../types';
-import * as XLSX from 'xlsx';
+import * as XLSX from 'xlsx-js-style';
 
 type SettingsScreenProps = {
   devices: ManagedDevice[];
@@ -70,6 +72,18 @@ type DestructiveRow = RowBase & { type: 'destructive'; onPress: () => void };
 
 type Row = LinkRow | ToggleRow | ActionRow | DestructiveRow;
  
+function AccountProfileIcon() {
+  return (
+    <Svg width={32} height={32} viewBox="0 0 40 40" accessibilityLabel="Account profile">
+      <Circle cx="20" cy="20" r="17.5" fill="none" stroke="#3E5B6C" strokeWidth="2.4" />
+      <Path
+        d="M20 8.5c-4.1 0-6.3 3.1-6.3 6.7v2.1c-.8.1-1.3.8-1.1 1.6l.6 2c.2.5.6.9 1.1 1.1.5 2.8 2.2 4.7 4.4 5.4v1.3c-.6 1.4-4.2 2.1-6.8 3.2-2.5 1-4 2.5-4.4 4.5h25c-.4-2-1.9-3.5-4.4-4.5-2.6-1.1-6.2-1.8-6.8-3.2v-1.3c2.2-.7 3.9-2.6 4.4-5.4.5-.2.9-.6 1.1-1.1l.6-2c.2-.8-.3-1.5-1.1-1.6v-2.1c0-3.6-2.2-6.7-6.3-6.7Z"
+        fill="#3E5B6C"
+      />
+    </Svg>
+  );
+}
+
 const SWITCH_TRACK_COLOR = { false: '#CAD9DE', true: '#84C8CC' };
 const SWITCH_THUMB_COLOR = { off: '#60777E', on: '#078A95' };
 
@@ -81,7 +95,6 @@ const thresholdReference = [
     Comment: 'Optimum for metabolism, reproduction, and growth',
     'Critical Threshold': 'Below 10 C or above 35 C',
     'Effects Beyond Threshold': 'Reduced feeding activity, slow growth, physiological stress, and mortality',
-    References: 'Bautista et al. (2022); BFAR (2022); HORIBA (2025); Romana-Eguia et al. (2020)',
   },
   {
     Parameter: 'pH',
@@ -90,7 +103,6 @@ const thresholdReference = [
     Comment: 'Suitable for metabolism and fish health',
     'Critical Threshold': 'Below 4 or above 9',
     'Effects Beyond Threshold': 'Increased ammonia toxicity, stress, reduced swimming activity, and mortality',
-    References: 'Bautista et al. (2022); BFAR (2022); HORIBA (2025); Stone & Thomford (2004)',
   },
   {
     Parameter: 'Dissolved Oxygen (DO)',
@@ -99,7 +111,6 @@ const thresholdReference = [
     Comment: 'Necessary for respiration and growth',
     'Critical Threshold': 'Below 3 mg/L',
     'Effects Beyond Threshold': 'Poor growth, stress, reduced activity, and fish mortality',
-    References: 'Bautista et al. (2022); BFAR (2022); HORIBA (2025)',
   },
   {
     Parameter: 'Total Dissolved Solids (TDS)',
@@ -108,7 +119,6 @@ const thresholdReference = [
     Comment: 'Indicates dissolved salts and mineral concentration',
     'Critical Threshold': 'Above 350 ppm',
     'Effects Beyond Threshold': 'Osmotic stress, reduced growth, and water-quality deterioration',
-    References: 'Bautista et al. (2022)',
   },
   {
     Parameter: 'Electrical Conductivity (EC)',
@@ -117,7 +127,6 @@ const thresholdReference = [
     Comment: 'Reflects ionic concentration and dissolved substances',
     'Critical Threshold': 'Above 5,000 uS/cm',
     'Effects Beyond Threshold': 'Excess dissolved salts, pollutants, and unstable pond conditions',
-    References: 'Stone & Thomford (2004)',
   },
   {
     Parameter: 'Turbidity',
@@ -126,7 +135,6 @@ const thresholdReference = [
     Comment: 'Moderate turbidity supports pond productivity',
     'Critical Threshold': 'Below 10 NTU or above 150 NTU',
     'Effects Beyond Threshold': 'Increased predation stress, clogged gills, and reduced growth',
-    References: 'HORIBA (2025)',
   },
 ];
  
@@ -180,6 +188,7 @@ export default function SettingsScreen({
   const [deviceDetailsNameDraft, setDeviceDetailsNameDraft] = useState('');
   const [deviceDetailsClaimCode, setDeviceDetailsClaimCode] = useState('');
   const [deviceDetailsClaimCodeVisible, setDeviceDetailsClaimCodeVisible] = useState(false);
+  const [deviceDetailsQrVisible, setDeviceDetailsQrVisible] = useState(false);
   const [deviceDetailsError, setDeviceDetailsError] = useState<string | null>(null);
 
   const syncAccountProfileDraft = () => {
@@ -213,6 +222,7 @@ export default function SettingsScreen({
     setDeviceDetailsId(null);
     setDeviceDetailsClaimCode('');
     setDeviceDetailsClaimCodeVisible(false);
+    setDeviceDetailsQrVisible(false);
   };
 
   const openFarmProfile = () => {
@@ -260,6 +270,7 @@ export default function SettingsScreen({
     setDeviceDetailsNameDraft(device.name);
     setDeviceDetailsClaimCode('');
     setDeviceDetailsClaimCodeVisible(false);
+    setDeviceDetailsQrVisible(false);
     setDeviceDetailsError(null);
     setActiveModal('deviceDetails');
     setDeviceBusy(`details:${device.deviceId}`);
@@ -456,6 +467,17 @@ export default function SettingsScreen({
     try {
       const workbook = XLSX.utils.book_new();
       const worksheet = XLSX.utils.json_to_sheet(rows);
+      rows.forEach((row, index) => {
+        const statusCell = worksheet[`E${index + 2}`];
+        const statusStyle = row['Alert Status'] === 'Optimal'
+          ? { fill: { patternType: 'solid', fgColor: { rgb: 'E2F3E8' } }, font: { bold: true, color: { rgb: '237A48' } } }
+          : row['Alert Status'] === 'Warning'
+            ? { fill: { patternType: 'solid', fgColor: { rgb: 'FFF4CC' } }, font: { bold: true, color: { rgb: '926500' } } }
+            : row['Alert Status'] === 'Critical'
+              ? { fill: { patternType: 'solid', fgColor: { rgb: 'FCE6E6' } }, font: { bold: true, color: { rgb: 'B42332' } } }
+              : null;
+        if (statusCell && statusStyle) statusCell.s = statusStyle;
+      });
       worksheet['!cols'] = [
         { wch: 24 },
         { wch: 28 },
@@ -473,7 +495,6 @@ export default function SettingsScreen({
         { wch: 34 },
         { wch: 48 },
         { wch: 28 },
-        { wch: 58 },
         { wch: 58 },
       ];
       referenceWorksheet['!autofilter'] = { ref: `A1:F${thresholdReference.length + 1}` };
@@ -509,8 +530,8 @@ export default function SettingsScreen({
         {
           key: 'farmProfile',
           type: 'link',
-          icon: '🌾',
-          iconBg: '#FFF3D5',
+          icon: '',
+          iconBg: '#EEF3F5',
           title: 'Account Profile',
           subtitle: accountEmail
             ? `${[firstName, lastName].filter(Boolean).join(' ')} · ${accountEmail}`
@@ -812,7 +833,9 @@ export default function SettingsScreen({
               const rowContent = (
                 <>
                   <View style={[styles.settingsIconBadge, { backgroundColor: row.iconBg }]}>
-                    <Text style={styles.settingsIconBadgeText}>{row.icon}</Text>
+                    {row.key === 'farmProfile'
+                      ? <AccountProfileIcon />
+                      : <Text style={styles.settingsIconBadgeText}>{row.icon}</Text>}
                   </View>
                   <View style={styles.settingsRowBody}>
                     <Text style={[styles.settingsRowTitle, row.type === 'destructive' && styles.deleteAccountTitle]}>
@@ -1044,6 +1067,35 @@ export default function SettingsScreen({
                 <Text style={screenStyles.profilePhoneHint}>
                   Keep this code private. Anyone with it may be able to claim the device after it is unlinked.
                 </Text>
+                <Pressable
+                  onPress={() => setDeviceDetailsQrVisible((visible) => !visible)}
+                  disabled={!deviceDetailsClaimCode}
+                  style={({ pressed }) => [
+                    screenStyles.deviceQrButton,
+                    !deviceDetailsClaimCode && screenStyles.deviceQrButtonDisabled,
+                    pressed && styles.tabButtonPressed,
+                  ]}
+                  accessibilityRole="button"
+                  accessibilityLabel={deviceDetailsQrVisible ? 'Hide device pairing QR code' : 'Show device pairing QR code'}
+                >
+                  <Text style={screenStyles.deviceQrButtonText}>
+                    {deviceDetailsQrVisible ? 'Hide pairing QR code' : 'Show pairing QR code'}
+                  </Text>
+                </Pressable>
+                {deviceDetailsQrVisible && deviceDetailsClaimCode && deviceDetailsId ? (
+                  <View style={screenStyles.deviceQrCard}>
+                    <QRCode
+                      value={`ISDAAPP:${deviceDetailsId}:${deviceDetailsClaimCode}`}
+                      size={220}
+                      color="#102A30"
+                      backgroundColor="#FFFFFF"
+                      quietZone={12}
+                    />
+                    <Text style={screenStyles.deviceQrHint}>
+                      This QR contains the private claim code. Share it only with someone you trust.
+                    </Text>
+                  </View>
+                ) : null}
               </View>
 
               {deviceDetailsError ? (
@@ -1211,6 +1263,11 @@ const screenStyles = StyleSheet.create({
     paddingHorizontal: 8,
   },
   deviceClaimCodeInput: { color: '#172B33', flex: 1, fontSize: 14, minWidth: 0, paddingHorizontal: 8, paddingVertical: 10 },
+  deviceQrButton: { alignItems: 'center', alignSelf: 'flex-start', backgroundColor: '#E6F5F5', borderRadius: 10, marginTop: 10, paddingHorizontal: 12, paddingVertical: 9 },
+  deviceQrButtonDisabled: { opacity: 0.5 },
+  deviceQrButtonText: { color: '#087F8C', fontSize: 11, fontWeight: '800' },
+  deviceQrCard: { alignItems: 'center', alignSelf: 'stretch', backgroundColor: '#FFFFFF', borderColor: '#DDE7EB', borderRadius: 14, borderWidth: 1, marginTop: 12, padding: 16 },
+  deviceQrHint: { color: '#60777E', fontSize: 11, lineHeight: 16, marginTop: 12, textAlign: 'center' },
   deviceForm: {
     backgroundColor: '#FFFFFF',
     borderColor: '#DDE7EB',

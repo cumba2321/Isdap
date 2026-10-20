@@ -9,7 +9,7 @@ import {
   signInWithCredential,
   signOut,
 } from 'firebase/auth';
-import { get, limitToLast, onValue, orderByChild, push, query, ref, runTransaction, set, update } from 'firebase/database';
+import { get, limitToLast, onValue, orderByChild, push, query, ref, remove, runTransaction, set, update } from 'firebase/database';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { ActivityIndicator, Alert, Platform, Vibration, View } from 'react-native';
@@ -118,8 +118,10 @@ function AppContent() {
   const [currentAccount, setCurrentAccount] = useState<StoredAccount | null>(null);
   const [preferences, setPreferences] = useState<NotificationPreferences>(DEFAULT_PREFERENCES);
   const [clearedAlertsAt, setClearedAlertsAt] = useState<number | null>(null);
+  const [alertsClearing, setAlertsClearing] = useState(false);
   const [historyLogs, setHistoryLogs] = useState<SensorLog[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyClearing, setHistoryClearing] = useState(false);
   const [deviceSerialLogs, setDeviceSerialLogs] = useState<DeviceSerialLog[]>([]);
   const [pushPermissionGranted, setPushPermissionGranted] = useState(false);
   const hasRestoredInitialAuth = useRef(false);
@@ -858,11 +860,20 @@ function AppContent() {
     }
   };
 
-  const handleClearAllAlerts = () => {
-    if (!farmId) return;
+  const handleClearAllAlerts = async (): Promise<AuthResult> => {
+    if (!farmId) return { success: false, error: 'Sign in before clearing alerts.' };
     const timestamp = Date.now();
-    setClearedAlertsAt(timestamp);
-    update(ref(database, `${ACCOUNTS_PATH}/${farmId}`), { clearedAlertsAt: timestamp });
+    setAlertsClearing(true);
+    try {
+      await update(ref(database, `${ACCOUNTS_PATH}/${farmId}`), { clearedAlertsAt: timestamp });
+      setClearedAlertsAt(timestamp);
+      setCurrentAccount((previous) => previous ? { ...previous, clearedAlertsAt: timestamp } : previous);
+      return { success: true };
+    } catch {
+      return { success: false, error: 'Could not save the alert dismissal. Check your connection and try again.' };
+    } finally {
+      setAlertsClearing(false);
+    }
   };
 
   const togglePreference = async (key: keyof NotificationPreferences) => {
@@ -965,6 +976,55 @@ function AppContent() {
     );
     return unsubscribe;
   }, [farmId, selectedDeviceId, sensorCalibrations]);
+
+  const handleClearHistory = async (): Promise<AuthResult> => {
+    if (!farmId || !selectedDeviceId) {
+      return { success: false, error: 'Select a linked device before clearing its history.' };
+    }
+    setHistoryClearing(true);
+    try {
+      await remove(ref(database, `${DEVICES_PATH}/${selectedDeviceId}/sensor_history`));
+      setHistoryLogs([]);
+      return { success: true };
+    } catch {
+      return { success: false, error: 'Could not clear this device history. Check your connection and Firebase permissions.' };
+    } finally {
+      setHistoryClearing(false);
+    }
+  };
+
+  const handleClearSerialMonitor = async (): Promise<AuthResult> => {
+    if (!farmId || !selectedDeviceId) {
+      return { success: false, error: 'Select a linked device before clearing its serial monitor.' };
+    }
+
+    const sequenceByBoot = new Map<string, number>();
+    deviceSerialLogs.forEach(({ id }) => {
+      const match = /^(.+)-(\d+)$/.exec(id);
+      if (!match) return;
+      const sequence = Number(match[2]);
+      if (Number.isSafeInteger(sequence)) {
+        sequenceByBoot.set(match[1], Math.max(sequenceByBoot.get(match[1]) ?? 0, sequence));
+      }
+    });
+    const clearMarker = [...sequenceByBoot.entries()]
+      .map(([bootId, sequence]) => `${bootId}:${sequence}`)
+      .join(',');
+
+    try {
+      const changes: Record<string, null | string> = {
+        [`${DEVICES_PATH}/${selectedDeviceId}/serial_monitor`]: null,
+      };
+      if (clearMarker) {
+        changes[`deviceConfig/${selectedDeviceId}/serialLogClear`] = clearMarker;
+      }
+      await update(ref(database), changes);
+      setDeviceSerialLogs([]);
+      return { success: true };
+    } catch {
+      return { success: false, error: 'Could not clear serial monitor data from Firebase. Check your connection and database rules.' };
+    }
+  };
 
   // Pull live sensor data, unless Auto Refresh is turned off in Settings.
   useEffect(() => {
@@ -1258,6 +1318,7 @@ function AppContent() {
             deviceName={selectedDevice?.name ?? null}
             deviceId={selectedDeviceId}
             firmwareSerialLogs={deviceSerialLogs}
+            onClearSerialMonitor={handleClearSerialMonitor}
             reading={reading}
             rawReading={deviceReading}
             voltages={sensorVoltages}
@@ -1297,10 +1358,18 @@ function AppContent() {
             showCritical={preferences.alertNotifications}
             showWarning={preferences.warningNotifications}
             clearedAlertsAt={clearedAlertsAt}
+            isClearing={alertsClearing}
             onClearAll={handleClearAllAlerts}
           />
         )}
-        {!showCalibrationScreen && activeTab === 'history' && <HistoryScreen logs={historyLogs} isLoading={historyLoading} />}
+        {!showCalibrationScreen && activeTab === 'history' && (
+          <HistoryScreen
+            logs={historyLogs}
+            isLoading={historyLoading}
+            isClearing={historyClearing}
+            onClearHistory={handleClearHistory}
+          />
+        )}
         {!showCalibrationScreen && activeTab === 'settings' && (
           <SettingsScreen
             devices={managedDevices}

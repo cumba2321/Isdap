@@ -1,11 +1,13 @@
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { formatValue, metrics } from '../metrics';
 import { styles } from '../styles';
-import { SensorLog } from '../types';
+import { AuthResult, SensorLog } from '../types';
 
 type HistoryScreenProps = {
   logs: SensorLog[];
   isLoading: boolean;
+  isClearing: boolean;
+  onClearHistory: () => Promise<AuthResult>;
 };
 
 function formatRecordedAt(timestamp: number) {
@@ -17,7 +19,29 @@ function formatRecordedAt(timestamp: number) {
   });
 }
 
-export default function HistoryScreen({ logs, isLoading }: HistoryScreenProps) {
+export default function HistoryScreen({ logs, isLoading, isClearing, onClearHistory }: HistoryScreenProps) {
+  const confirmClearHistory = () => {
+    Alert.alert(
+      'Clear history?',
+      'This permanently deletes the saved sensor readings for the selected device. New readings will be saved again as they arrive.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear history',
+          style: 'destructive',
+          onPress: async () => {
+            const result = await onClearHistory();
+            if (result.success) {
+              Alert.alert('History cleared', 'Saved readings for this device have been deleted.');
+            } else {
+              Alert.alert('Could not clear history', result.error);
+            }
+          },
+        },
+      ],
+    );
+  };
+
   return (
     <ScrollView contentContainerStyle={styles.content}>
       <View style={styles.header}>
@@ -25,9 +49,26 @@ export default function HistoryScreen({ logs, isLoading }: HistoryScreenProps) {
           <Text style={styles.title}>History</Text>
           <Text style={styles.screenSubtitle}>Recent sensor readings</Text>
         </View>
-        <View style={styles.historyCount}>
-          <Text style={styles.historyCountText}>{logs.length}</Text>
-          <Text style={styles.historyCountLabel}>LOGS</Text>
+        <View style={screenStyles.headerActions}>
+          {logs.length > 0 ? (
+            <Pressable
+              onPress={confirmClearHistory}
+              disabled={isClearing || isLoading}
+              style={({ pressed }) => [
+                screenStyles.clearButton,
+                (isClearing || isLoading) && screenStyles.clearButtonDisabled,
+                pressed && screenStyles.clearButtonPressed,
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Clear saved sensor history"
+            >
+              <Text style={screenStyles.clearButtonText}>{isClearing ? 'Clearing…' : 'Clear'}</Text>
+            </Pressable>
+          ) : null}
+          <View style={styles.historyCount}>
+            <Text style={styles.historyCountText}>{logs.length}</Text>
+            <Text style={styles.historyCountLabel}>LOGS</Text>
+          </View>
         </View>
       </View>
 
@@ -69,6 +110,11 @@ export default function HistoryScreen({ logs, isLoading }: HistoryScreenProps) {
 }
 
 const screenStyles = StyleSheet.create({
+  headerActions: { alignItems: 'center', flexDirection: 'row', gap: 8 },
+  clearButton: { backgroundColor: '#FFF0F0', borderColor: '#F2D5D7', borderRadius: 12, borderWidth: 1, paddingHorizontal: 12, paddingVertical: 10 },
+  clearButtonDisabled: { opacity: 0.5 },
+  clearButtonPressed: { opacity: 0.75 },
+  clearButtonText: { color: '#A83E49', fontSize: 11, fontWeight: '800' },
   emptyCard: {
     alignItems: 'center',
     backgroundColor: '#FFFFFF',

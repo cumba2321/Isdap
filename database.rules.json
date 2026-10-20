@@ -35,6 +35,10 @@
         "smsWarning": {
           ".write": "auth != null && root.child('deviceClaims').child($deviceId).child('ownerUid').val() === auth.uid",
           ".validate": "newData.isBoolean()"
+        },
+        "serialLogClear": {
+          ".write": "auth != null && root.child('deviceClaims').child($deviceId).child('ownerUid').val() === auth.uid",
+          ".validate": "newData.isString() && newData.val().length <= 512"
         }
       }
     },
