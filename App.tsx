@@ -12,7 +12,7 @@ import {
   signOut,
 } from 'firebase/auth';
 import { endAt, get, limitToLast, onValue, orderByChild, push, query, ref, remove, runTransaction, set, startAt, update } from 'firebase/database';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { ActivityIndicator, Alert, Platform, Vibration, View } from 'react-native';
@@ -51,6 +51,7 @@ const ACCOUNTS_PATH = 'IsdaApp/accounts';
 const DEVICE_CLAIMS_PATH = 'deviceClaims';
 const DEVICES_PATH = 'devices';
 const HISTORY_PAGE_SIZE = 100;
+const HISTORY_CHART_MAX_POINTS = 500;
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -1097,6 +1098,34 @@ function AppContent() {
     }
   };
 
+  const handleLoadHistoryChart = useCallback(async (
+    rangeStartMs: number,
+    rangeEndMs: number,
+  ): Promise<{ success: true; logs: SensorLog[] } | { success: false; error: string }> => {
+    if (!farmId || !selectedDeviceId) {
+      return { success: false, error: 'Select a linked device before viewing its history chart.' };
+    }
+    try {
+      const chartQuery = query(
+        ref(database, `${DEVICES_PATH}/${selectedDeviceId}/sensor_history`),
+        orderByChild('recordedAt'),
+        startAt(rangeStartMs),
+        endAt(rangeEndMs),
+        limitToLast(HISTORY_CHART_MAX_POINTS),
+      );
+      const snapshot = await get(chartQuery);
+      const data = snapshot.val() as Record<string, (PondReading & { recordedAt?: number }) | null> | null;
+      const chartLogs = Object.entries(data ?? {}).flatMap(([id, value]) => (
+        value?.recordedAt
+          ? [{ ...applySensorCalibrations(value, sensorCalibrations), id, recordedAt: value.recordedAt }]
+          : []
+      )).sort((a, b) => a.recordedAt - b.recordedAt);
+      return { success: true, logs: chartLogs };
+    } catch {
+      return { success: false, error: 'Could not load chart readings. Check your connection and Firebase permissions.' };
+    }
+  }, [farmId, selectedDeviceId, sensorCalibrations]);
+
   const handleClearHistory = async (): Promise<AuthResult> => {
     if (!farmId || !selectedDeviceId) {
       return { success: false, error: 'Select a linked device before clearing its history.' };
@@ -1566,6 +1595,7 @@ function AppContent() {
         {!showCalibrationScreen && activeTab === 'history' && (
           <HistoryScreen
             logs={historyLogs}
+            hasDevice={selectedDeviceId !== null}
             isLoading={historyLoading}
             isClearing={historyClearing}
             onClearHistory={handleClearHistory}
@@ -1574,6 +1604,7 @@ function AppContent() {
             onLoadMore={handleLoadMoreHistory}
             onDeleteDate={handleDeleteHistoryDate}
             onDownloadDate={handleDownloadHistoryDate}
+            onLoadChart={handleLoadHistoryChart}
           />
         )}
         {!showCalibrationScreen && activeTab === 'settings' && (
