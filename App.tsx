@@ -3,14 +3,17 @@ import * as Notifications from 'expo-notifications';
 import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import {
   deleteUser,
+  EmailAuthProvider,
   GoogleAuthProvider,
+  linkWithCredential,
   onAuthStateChanged,
   reauthenticateWithCredential,
   signInWithCredential,
   signOut,
 } from 'firebase/auth';
-import { get, limitToLast, onValue, orderByChild, push, query, ref, remove, runTransaction, set, update } from 'firebase/database';
+import { endAt, get, limitToLast, onValue, orderByChild, push, query, ref, remove, runTransaction, set, startAt, update } from 'firebase/database';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { ActivityIndicator, Alert, Platform, Vibration, View } from 'react-native';
 
@@ -47,6 +50,7 @@ import {
 const ACCOUNTS_PATH = 'IsdaApp/accounts';
 const DEVICE_CLAIMS_PATH = 'deviceClaims';
 const DEVICES_PATH = 'devices';
+const HISTORY_PAGE_SIZE = 100;
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -62,6 +66,7 @@ type AuthScreen = 'login' | 'signup';
 type StoredAccount = Account & {
   preferences?: NotificationPreferences;
   clearedAlertsAt?: number;
+  dismissedAlerts?: Record<string, Partial<Record<MetricKey, number>>>;
   devices?: Record<string, { name: string }>;
   selectedDeviceId?: string | null;
   sensorCalibrations?: Record<string, SensorCalibrations>;
@@ -108,6 +113,7 @@ function AppContent() {
   const [isLive, setIsLive] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [activeTab, setActiveTab] = useState<TabKey>('dashboard');
+  const [hasUnreadAlerts, setHasUnreadAlerts] = useState(false);
   const [showCalibrationScreen, setShowCalibrationScreen] = useState(false);
   const [focusSmsSettings, setFocusSmsSettings] = useState(false);
   const [alertDetectedAt, setAlertDetectedAt] = useState<Partial<Record<MetricKey, Date>>>({});
@@ -121,6 +127,8 @@ function AppContent() {
   const [alertsClearing, setAlertsClearing] = useState(false);
   const [historyLogs, setHistoryLogs] = useState<SensorLog[]>([]);
   const [historyLoading, setHistoryLoading] = useState(true);
+  const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
+  const [historyHasMore, setHistoryHasMore] = useState(false);
   const [historyClearing, setHistoryClearing] = useState(false);
   const [deviceSerialLogs, setDeviceSerialLogs] = useState<DeviceSerialLog[]>([]);
   const [pushPermissionGranted, setPushPermissionGranted] = useState(false);
@@ -153,7 +161,8 @@ function AppContent() {
           try {
             const accountSnapshot = await get(ref(database, `${ACCOUNTS_PATH}/${user.uid}`));
             if (accountSnapshot.exists()) {
-              setFarmId(user.uid);
+              setAuthScreen('login');
+              setFarmId(null);
             } else {
               pendingSignupUid.current = user.uid;
               setAuthScreen('signup');
@@ -202,7 +211,7 @@ function AppContent() {
 
   // Sync local preferences whenever this account record changes.
   useEffect(() => {
-    setPreferences({ ...DEFAULT_PREFERENCES, ...currentAccount?.preferences });
+    setPreferences({ ...DEFAULT_PREFERENCES, ...currentAccount?.preferences, smsWarning: false });
     setClearedAlertsAt(currentAccount?.clearedAlertsAt ?? null);
     const devices = currentAccount?.devices ?? {};
     const savedSelection = currentAccount?.selectedDeviceId;
@@ -222,8 +231,8 @@ function AppContent() {
     if (!user.email) {
       throw new Error('The selected Google account does not have an email address.');
     }
-    if (!user.emailVerified) {
-      throw new Error('Verify this email address with Google before continuing.');
+    if (!user.providerData.some((provider) => provider.providerId === GoogleAuthProvider.PROVIDER_ID)) {
+      throw new Error('Google did not verify this account. Choose a Google account and try again.');
     }
     return user;
   };
@@ -259,6 +268,7 @@ function AppContent() {
       countryCallingCode: string;
       phoneNumber: string;
     },
+    password: string,
   ): Promise<AuthResult> => {
     try {
       const user = auth.currentUser;
@@ -269,6 +279,10 @@ function AppContent() {
       if (!email) {
         return { success: false, error: 'The selected Google account does not have an email address.' };
       }
+      if (password.length < 6) {
+        return { success: false, error: 'Password must be at least 6 characters.' };
+      }
+      await linkWithCredential(user, EmailAuthProvider.credential(email, password));
       const account: StoredAccount = {
         authUid: user.uid,
         email,
@@ -313,9 +327,40 @@ function AppContent() {
     setAuthScreen('login');
   };
 
-  const handleSignIn = async (): Promise<AuthResult> => {
+  const handleVerifyGoogleForSignIn = async (): Promise<AuthResult> => {
     try {
       const user = await authenticateWithGoogle();
+      const accountSnapshot = await get(ref(database, `${ACCOUNTS_PATH}/${user.uid}`));
+      if (!accountSnapshot.exists()) {
+        return { success: false, error: 'No account is registered for this Google account. Please sign up first.' };
+      }
+      return { success: true };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Google sign-in failed. Please try again.',
+      };
+    }
+  };
+
+  const handleCompleteSignIn = async (password: string): Promise<AuthResult> => {
+    try {
+      const user = auth.currentUser;
+      const email = user?.email?.trim().toLowerCase();
+      if (!user || !email) {
+        return { success: false, error: 'Verify your Google account again before entering your password.' };
+      }
+
+      const passwordCredential = EmailAuthProvider.credential(email, password);
+      const hasPasswordProvider = user.providerData.some(
+        (provider) => provider.providerId === EmailAuthProvider.PROVIDER_ID,
+      );
+      if (hasPasswordProvider) {
+        await reauthenticateWithCredential(user, passwordCredential);
+      } else {
+        await linkWithCredential(user, passwordCredential);
+      }
+
       const accountRef = ref(database, `${ACCOUNTS_PATH}/${user.uid}`);
       const accountSnapshot = await get(accountRef);
       const account = accountSnapshot.val() as (StoredAccount & { pin?: string | null }) | null;
@@ -323,10 +368,7 @@ function AppContent() {
         return { success: false, error: 'No account is registered for this Google account. Please sign up first.' };
       }
 
-      if (Object.prototype.hasOwnProperty.call(account, 'pin')) {
-        await update(accountRef, { pin: null });
-      }
-
+      if (Object.prototype.hasOwnProperty.call(account, 'pin')) await update(accountRef, { pin: null });
       const googleName = user.displayName?.trim().split(/\s+/) ?? [];
       const firstName = account.firstName?.trim() || googleName[0] || '';
       const lastName = account.lastName?.trim() || googleName.slice(1).join(' ');
@@ -342,7 +384,7 @@ function AppContent() {
     } catch (error) {
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Google sign-in failed. Please try again.',
+        error: error instanceof Error ? error.message : 'Password verification failed. Please try again.',
       };
     }
   };
@@ -454,7 +496,7 @@ function AppContent() {
         changes[`${configPath}/alertNumber`] = nextPreferences.smsNotifications ? normalizedPhone : '';
         changes[`${configPath}/smsEnabled`] = nextPreferences.smsNotifications;
         changes[`${configPath}/smsCritical`] = nextPreferences.smsCritical;
-        changes[`${configPath}/smsWarning`] = nextPreferences.smsWarning;
+        changes[`${configPath}/smsWarning`] = false;
       });
       await update(ref(database), changes);
       setCurrentAccount((previous) => previous
@@ -741,7 +783,7 @@ function AppContent() {
             : '',
           [`${configPath}/smsEnabled`]: preferences.smsNotifications && Boolean(currentAccount?.phoneNumber),
           [`${configPath}/smsCritical`]: preferences.smsCritical,
-          [`${configPath}/smsWarning`]: preferences.smsWarning,
+          [`${configPath}/smsWarning`]: false,
         });
         setCurrentAccount((previous) => previous
           ? { ...previous, devices: nextDevices, selectedDeviceId: deviceId }
@@ -876,6 +918,32 @@ function AppContent() {
     }
   };
 
+  const handleDismissAlert = async (metricKey: MetricKey, detectedAt: number): Promise<AuthResult> => {
+    if (!farmId || !selectedDeviceId) {
+      return { success: false, error: 'Select a linked device before dismissing alerts.' };
+    }
+    try {
+      await update(ref(database, `${ACCOUNTS_PATH}/${farmId}`), {
+        [`dismissedAlerts/${selectedDeviceId}/${metricKey}`]: detectedAt,
+      });
+      setCurrentAccount((previous) => previous
+        ? {
+            ...previous,
+            dismissedAlerts: {
+              ...previous.dismissedAlerts,
+              [selectedDeviceId]: {
+                ...previous.dismissedAlerts?.[selectedDeviceId],
+                [metricKey]: detectedAt,
+              },
+            },
+          }
+        : previous);
+      return { success: true };
+    } catch {
+      return { success: false, error: 'Could not save this alert dismissal. Check your connection and try again.' };
+    }
+  };
+
   const togglePreference = async (key: keyof NotificationPreferences) => {
     if (!farmId) return;
     const next = { ...preferences, [key]: !preferences[key] };
@@ -895,14 +963,14 @@ function AppContent() {
       const changes: Record<string, string | boolean | NotificationPreferences> = {
         [`${ACCOUNTS_PATH}/${farmId}/preferences`]: next,
       };
-      const smsSetting = key === 'smsNotifications' || key === 'smsCritical' || key === 'smsWarning';
+      const smsSetting = key === 'smsNotifications' || key === 'smsCritical';
       if (smsSetting) {
         managedDevices.forEach(({ deviceId }) => {
           const configPath = `deviceConfig/${deviceId}`;
           changes[`${configPath}/alertNumber`] = next.smsNotifications ? savedPhone : '';
           changes[`${configPath}/smsEnabled`] = next.smsNotifications;
           changes[`${configPath}/smsCritical`] = next.smsCritical;
-          changes[`${configPath}/smsWarning`] = next.smsWarning;
+          changes[`${configPath}/smsWarning`] = false;
         });
       }
       await update(ref(database), changes);
@@ -947,17 +1015,21 @@ function AppContent() {
   useEffect(() => {
     if (!selectedDeviceId || !farmId) {
       setHistoryLogs([]);
+      setHistoryHasMore(false);
       setHistoryLoading(false);
       return;
     }
     setHistoryLoading(true);
+    setHistoryLogs([]);
+    setHistoryHasMore(false);
     const historyPath = `${DEVICES_PATH}/${selectedDeviceId}/sensor_history`;
-    const historyQuery = query(ref(database, historyPath), orderByChild('recordedAt'), limitToLast(50));
+    const historyQuery = query(ref(database, historyPath), orderByChild('recordedAt'), limitToLast(HISTORY_PAGE_SIZE));
+    let isInitialSnapshot = true;
     const unsubscribe = onValue(
       historyQuery,
       (snapshot) => {
         const data = snapshot.val() as Record<string, (PondReading & { recordedAt?: number }) | null> | null;
-        const logs = Object.entries(data ?? [])
+        const incomingLogs = Object.entries(data ?? [])
           .flatMap(([id, value]) => (value?.recordedAt
             ? [{
                 ...applySensorCalibrations(value, sensorCalibrations),
@@ -966,7 +1038,15 @@ function AppContent() {
               }]
             : []))
           .sort((a, b) => b.recordedAt - a.recordedAt);
-        setHistoryLogs(logs);
+        setHistoryLogs((previous) => {
+          const merged = new Map(previous.map((log) => [log.id, log]));
+          incomingLogs.forEach((log) => merged.set(log.id, log));
+          return [...merged.values()].sort((a, b) => b.recordedAt - a.recordedAt);
+        });
+        if (isInitialSnapshot) {
+          setHistoryHasMore(Object.keys(data ?? {}).length >= HISTORY_PAGE_SIZE);
+          isInitialSnapshot = false;
+        }
         setHistoryLoading(false);
       },
       () => {
@@ -977,6 +1057,46 @@ function AppContent() {
     return unsubscribe;
   }, [farmId, selectedDeviceId, sensorCalibrations]);
 
+  const handleLoadMoreHistory = async (): Promise<AuthResult> => {
+    if (!farmId || !selectedDeviceId) {
+      return { success: false, error: 'Select a linked device before loading its history.' };
+    }
+    const oldestLog = historyLogs[historyLogs.length - 1];
+    if (!oldestLog) return { success: false, error: 'There are no older readings to load.' };
+
+    setHistoryLoadingMore(true);
+    try {
+      const historyRef = ref(database, `${DEVICES_PATH}/${selectedDeviceId}/sensor_history`);
+      const olderQuery = query(
+        historyRef,
+        orderByChild('recordedAt'),
+        endAt(oldestLog.recordedAt - 1),
+        limitToLast(HISTORY_PAGE_SIZE),
+      );
+      const snapshot = await get(olderQuery);
+      const data = snapshot.val() as Record<string, (PondReading & { recordedAt?: number }) | null> | null;
+      const olderLogs = Object.entries(data ?? [])
+        .flatMap(([id, value]) => (value?.recordedAt
+          ? [{
+              ...applySensorCalibrations(value, sensorCalibrations),
+              id,
+              recordedAt: value.recordedAt,
+            }]
+          : []));
+      setHistoryLogs((previous) => {
+        const merged = new Map(previous.map((log) => [log.id, log]));
+        olderLogs.forEach((log) => merged.set(log.id, log));
+        return [...merged.values()].sort((a, b) => b.recordedAt - a.recordedAt);
+      });
+      setHistoryHasMore(Object.keys(data ?? {}).length >= HISTORY_PAGE_SIZE);
+      return { success: true };
+    } catch {
+      return { success: false, error: 'Could not load older readings. Check your connection and Firebase permissions.' };
+    } finally {
+      setHistoryLoadingMore(false);
+    }
+  };
+
   const handleClearHistory = async (): Promise<AuthResult> => {
     if (!farmId || !selectedDeviceId) {
       return { success: false, error: 'Select a linked device before clearing its history.' };
@@ -985,6 +1105,7 @@ function AppContent() {
     try {
       await remove(ref(database, `${DEVICES_PATH}/${selectedDeviceId}/sensor_history`));
       setHistoryLogs([]);
+      setHistoryHasMore(false);
       return { success: true };
     } catch {
       return { success: false, error: 'Could not clear this device history. Check your connection and Firebase permissions.' };
@@ -992,6 +1113,58 @@ function AppContent() {
       setHistoryClearing(false);
     }
   };
+
+  const getLogsForHistoryDate = async (dateKey: string): Promise<
+    { success: true; logs: SensorLog[] } | { success: false; error: string }
+  > => {
+    if (!farmId || !selectedDeviceId) {
+      return { success: false, error: 'Select a linked device before accessing its history.' };
+    }
+    const [year, month, day] = dateKey.split('-').map(Number);
+    const start = new Date(year, month - 1, day).getTime();
+    const end = new Date(year, month - 1, day + 1).getTime();
+    try {
+      const dayQuery = query(
+        ref(database, `${DEVICES_PATH}/${selectedDeviceId}/sensor_history`),
+        orderByChild('recordedAt'),
+        startAt(start),
+        endAt(end - 1),
+      );
+      const snapshot = await get(dayQuery);
+      const data = snapshot.val() as Record<string, (PondReading & { recordedAt?: number }) | null> | null;
+      const logs = Object.entries(data ?? []).flatMap(([id, value]) => (
+        value?.recordedAt
+          ? [{ ...applySensorCalibrations(value, sensorCalibrations), id, recordedAt: value.recordedAt }]
+          : []
+      )).sort((a, b) => a.recordedAt - b.recordedAt);
+      return { success: true, logs };
+    } catch {
+      return { success: false, error: 'Could not access readings for this date. Check your connection and Firebase permissions.' };
+    }
+  };
+
+  const handleDeleteHistoryDate = async (dateKey: string): Promise<AuthResult> => {
+    if (!selectedDeviceId) return { success: false, error: 'Select a linked device before deleting history.' };
+    const result = await getLogsForHistoryDate(dateKey);
+    if (!result.success) return { success: false, error: result.error };
+    if (result.logs.length === 0) return { success: true };
+
+    try {
+      const changes: Record<string, null> = {};
+      result.logs.forEach(({ id }) => {
+        changes[`${DEVICES_PATH}/${selectedDeviceId}/sensor_history/${id}`] = null;
+      });
+      await update(ref(database), changes);
+      setHistoryLogs((previous) => previous.filter((log) => !result.logs.some((deleted) => deleted.id === log.id)));
+      return { success: true };
+    } catch {
+      return { success: false, error: 'Could not delete readings for this date from Firebase. Check your connection and permissions.' };
+    }
+  };
+
+  const handleDownloadHistoryDate = async (dateKey: string): Promise<
+    { success: true; logs: SensorLog[] } | { success: false; error: string }
+  > => getLogsForHistoryDate(dateKey);
 
   const handleClearSerialMonitor = async (): Promise<AuthResult> => {
     if (!farmId || !selectedDeviceId) {
@@ -1169,6 +1342,31 @@ function AppContent() {
 
   const hasAlert = activeAlerts.length > 0;
 
+  const previousActiveAlertKeys = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    setHasUnreadAlerts(false);
+    previousActiveAlertKeys.current = new Set();
+  }, [farmId]);
+
+  useEffect(() => {
+    const currentAlertKeys = new Set(
+      activeAlerts.map((alert) => `${farmId}:${selectedDeviceId}:${alert.metric.key}`),
+    );
+    const hasNewAlert = [...currentAlertKeys].some((key) => !previousActiveAlertKeys.current.has(key));
+
+    if (hasNewAlert && activeTab !== 'alert') {
+      setHasUnreadAlerts(true);
+    }
+
+    previousActiveAlertKeys.current = currentAlertKeys;
+  }, [activeAlerts, activeTab, farmId, selectedDeviceId]);
+
+  useEffect(() => {
+    if (activeTab === 'alert') {
+      setHasUnreadAlerts(false);
+    }
+  }, [activeTab]);
+
   // Suppress initial readings and throttle repeat incidents caused by noisy sensor values.
   const notificationState = useRef<{
     deviceId: string | null;
@@ -1302,7 +1500,8 @@ function AppContent() {
     }
     return (
       <LoginScreen
-        onSignIn={handleSignIn}
+        onVerifyGoogle={handleVerifyGoogleForSignIn}
+        onCompleteSignIn={handleCompleteSignIn}
         onNavigateSignUp={() => setAuthScreen('signup')}
       />
     );
@@ -1358,8 +1557,10 @@ function AppContent() {
             showCritical={preferences.alertNotifications}
             showWarning={preferences.warningNotifications}
             clearedAlertsAt={clearedAlertsAt}
+            dismissedAlerts={currentAccount?.dismissedAlerts?.[selectedDeviceId ?? ''] ?? {}}
             isClearing={alertsClearing}
             onClearAll={handleClearAllAlerts}
+            onDismissAlert={handleDismissAlert}
           />
         )}
         {!showCalibrationScreen && activeTab === 'history' && (
@@ -1368,6 +1569,11 @@ function AppContent() {
             isLoading={historyLoading}
             isClearing={historyClearing}
             onClearHistory={handleClearHistory}
+            hasMore={historyHasMore}
+            isLoadingMore={historyLoadingMore}
+            onLoadMore={handleLoadMoreHistory}
+            onDeleteDate={handleDeleteHistoryDate}
+            onDownloadDate={handleDownloadHistoryDate}
           />
         )}
         {!showCalibrationScreen && activeTab === 'settings' && (
@@ -1411,7 +1617,7 @@ function AppContent() {
           setShowCalibrationScreen(false);
           setActiveTab(tab);
         }}
-        hasAlert={hasAlert}
+        hasUnreadAlerts={hasUnreadAlerts}
       />
     </SafeAreaView>
   );
@@ -1419,8 +1625,10 @@ function AppContent() {
 
 export default function App() {
   return (
-    <SafeAreaProvider>
-      <AppContent />
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <AppContent />
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }

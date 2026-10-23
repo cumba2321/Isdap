@@ -5,7 +5,7 @@ import { TabKey } from '../types';
 type TabBarProps = {
   activeTab: TabKey;
   onChangeTab: (tab: TabKey) => void;
-  hasAlert: boolean;
+  hasUnreadAlerts: boolean;
 };
  
 function TabButton({
@@ -27,7 +27,7 @@ function TabButton({
       style={({ pressed }) => [styles.tabButton, pressed && styles.tabButtonPressed]}
       accessibilityRole="tab"
       accessibilityState={{ selected: active }}
-      accessibilityLabel={label}
+      accessibilityLabel={badge ? `${label}, unread alerts` : label}
     >
       <View style={styles.tabIconWrap}>
         <View style={[styles.tabIcon, active && styles.tabIconActive]}>
@@ -40,7 +40,7 @@ function TabButton({
   );
 }
  
-export default function TabBar({ activeTab, onChangeTab, hasAlert }: TabBarProps) {
+export default function TabBar({ activeTab, onChangeTab, hasUnreadAlerts }: TabBarProps) {
   return (
     <View style={styles.tabBar}>
       <TabButton
@@ -54,7 +54,7 @@ export default function TabBar({ activeTab, onChangeTab, hasAlert }: TabBarProps
         image={require('../assets/tab-alert.png')}
         active={activeTab === 'alert'}
         onPress={() => onChangeTab('alert')}
-        badge={hasAlert}
+        badge={hasUnreadAlerts}
       />
       <Pressable
         onPress={() => onChangeTab('calibration')}

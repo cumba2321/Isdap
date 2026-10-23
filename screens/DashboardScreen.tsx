@@ -1,18 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
-import { Animated, Easing, Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { useState } from 'react';
+import { Image, Modal, Pressable, ScrollView, Text, View } from 'react-native';
 import { formatValue, metrics } from '../metrics';
 import { styles } from '../styles';
 import { AuthResult, ManagedDevice, PondReading } from '../types';
 
-const MASCOT_FRAMES = [
-  require('../assets/fish-mascot.png'),
-  require('../assets/fish-mascot-frame-1.png'),
-  require('../assets/fish-mascot-frame-2.png'),
-  require('../assets/fish-mascot-frame-3.png'),
-  require('../assets/fish-mascot-frame-4.png'),
-  require('../assets/fish-mascot-frame-5.png'),
-];
-const MASCOT_FRAME_DURATIONS = [380, 100, 110, 100, 380, 180];
+const FISH_MASCOT = require('../assets/fish-mascot-user.gif');
 
 type DashboardScreenProps = {
   reading: PondReading;
@@ -46,8 +38,6 @@ export default function DashboardScreen({
   const [devicePickerVisible, setDevicePickerVisible] = useState(false);
   const [devicePickerError, setDevicePickerError] = useState('');
   const [selectingDeviceId, setSelectingDeviceId] = useState<string | null>(null);
-  const [mascotFrame, setMascotFrame] = useState(0);
-  const mascotSwim = useRef(new Animated.Value(0)).current;
   const displayedReading = isLive
     ? reading
     : { temp: 0, ec: 0, do: 0, ph: 0, tds: 0, turbidity: 0 };
@@ -61,41 +51,6 @@ export default function DashboardScreen({
   const dateLabel = `${now.toLocaleDateString('en-US', { weekday: 'long' }).toUpperCase()}, ${now.toLocaleDateString('en-US', { month: 'long' }).toUpperCase()} ${now.getDate()}`;
   const hour = now.getHours();
   const timeOfDay = hour < 12 ? 'morning' : hour < 17 ? 'afternoon' : 'evening';
-
-  useEffect(() => {
-    let timeout: ReturnType<typeof setTimeout>;
-    let currentFrame = 0;
-    const advanceFrame = () => {
-      timeout = setTimeout(() => {
-        currentFrame = (currentFrame + 1) % MASCOT_FRAMES.length;
-        setMascotFrame(currentFrame);
-        advanceFrame();
-      }, MASCOT_FRAME_DURATIONS[currentFrame]);
-    };
-    advanceFrame();
-    return () => clearTimeout(timeout);
-  }, []);
-
-  useEffect(() => {
-    const swim = Animated.loop(
-      Animated.sequence([
-        Animated.timing(mascotSwim, {
-          toValue: 1,
-          duration: 1250,
-          easing: Easing.inOut(Easing.sin),
-          useNativeDriver: true,
-        }),
-        Animated.timing(mascotSwim, {
-          toValue: -1,
-          duration: 1250,
-          easing: Easing.inOut(Easing.sin),
-          useNativeDriver: true,
-        }),
-      ]),
-    );
-    swim.start();
-    return () => swim.stop();
-  }, [mascotSwim]);
 
   return (
     <ScrollView contentContainerStyle={styles.content}>
@@ -146,20 +101,11 @@ export default function DashboardScreen({
               : "Hi! I'm here to help you keep an eye on your pond's water quality. Connect the device to see live readings and alerts."}
           </Text>
         </View>
-        <Animated.Image
-          source={MASCOT_FRAMES[mascotFrame]}
-          style={[
-            styles.dashboardMascot,
-            {
-              transform: [
-                { translateX: mascotSwim.interpolate({ inputRange: [-1, 1], outputRange: [-2, 2] }) },
-                { translateY: mascotSwim.interpolate({ inputRange: [-1, 1], outputRange: [2, -3] }) },
-                { rotate: mascotSwim.interpolate({ inputRange: [-1, 1], outputRange: ['2deg', '-2deg'] }) },
-              ],
-            },
-          ]}
+        <Image
+          source={FISH_MASCOT}
+          style={styles.dashboardMascot}
           resizeMode="contain"
-          accessibilityLabel="Animated IsdaApp fish mascot"
+          accessibilityLabel="IsdaApp fish mascot"
         />
         <View style={styles.dashboardMascotSparkleTop} />
         <View style={styles.dashboardMascotSparkleSide} />
@@ -305,9 +251,9 @@ export default function DashboardScreen({
               <Text style={styles.dashboardConnectMarkText}>+</Text>
             </Pressable>
             <View style={styles.dashboardConnectBody}>
-              <Text style={styles.dashboardConnectTitle}>Set up SMS alerts</Text>
+              <Text style={styles.dashboardConnectTitle}>Set up offline SMS backup</Text>
               <Text style={styles.dashboardConnectCopy}>
-                Activate SMS in Settings to receive alerts.
+                Receive a critical SMS if the board cannot reach the internet.
               </Text>
             </View>
           </View>

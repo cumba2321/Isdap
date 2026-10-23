@@ -573,7 +573,14 @@ export default function CalibrationScreen({
           accessibilityRole="button"
           accessibilityLabel={`${displayLabel} ${formatValue(value, displayMetric.key)} ${displayMetric.unit}.${showingTemperature ? '' : ` Water temperature ${isLive ? `${formatValue(reading.temp, 'temp')} degrees Celsius` : 'unavailable'}. Sensor voltage ${sensorVoltage === undefined ? 'unavailable' : `${sensorVoltage.toFixed(3)} volts`}, ${voltageIsStable ? 'stable' : 'not stable'}.`} Tap for next sensor.`}
         >
-          <Text style={screenStyles.metricName}>{displayLabel}</Text>
+          <Text
+            adjustsFontSizeToFit
+            minimumFontScale={0.75}
+            numberOfLines={2}
+            style={screenStyles.metricName}
+          >
+            {displayLabel}
+          </Text>
           <Text style={[screenStyles.readingStatus, isOutOfRange && screenStyles.alertText]}>{status}</Text>
           <Text style={screenStyles.readingValue}>{formatValue(value, displayMetric.key)}</Text>
           <Text style={screenStyles.readingUnit}>{displayMetric.unit}</Text>
@@ -997,7 +1004,16 @@ const screenStyles = StyleSheet.create({
     width: '96%',
   },
   readingCircleAlert: { borderColor: '#C84F5B' },
-  metricName: { color: '#172B33', fontSize: 27, fontWeight: '700', marginTop: 2 },
+  metricName: {
+    color: '#172B33',
+    flexShrink: 1,
+    fontSize: 22,
+    fontWeight: '700',
+    lineHeight: 26,
+    marginTop: 2,
+    textAlign: 'center',
+    width: '100%',
+  },
   readingStatus: { color: '#60777E', fontSize: 14, fontWeight: '500', marginTop: 1 },
   alertText: { color: '#9D3944' },
   readingValue: { color: '#153D46', fontSize: 56, fontWeight: '700', marginTop: 2 },

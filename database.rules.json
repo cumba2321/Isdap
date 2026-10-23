@@ -88,7 +88,8 @@
         },
         "sensor_history": {
           ".read": "auth != null && root.child('deviceClaims').child($deviceId).child('ownerUid').val() === auth.uid",
-          ".write": "auth != null && root.child('deviceClaims').child($deviceId).child('ownerUid').val() === auth.uid"
+          ".write": "auth != null && root.child('deviceClaims').child($deviceId).child('ownerUid').val() === auth.uid",
+          ".indexOn": ["recordedAt"]
         }
       }
     }

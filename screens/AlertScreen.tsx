@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
 import { formatValue } from '../metrics';
 import { styles } from '../styles';
-import { ActiveAlert, AuthResult } from '../types';
+import { ActiveAlert, AuthResult, MetricKey } from '../types';
 import { formatRelativeTime } from '../utils';
 
 type AlertScreenProps = {
@@ -11,8 +11,10 @@ type AlertScreenProps = {
   showCritical: boolean;
   showWarning: boolean;
   clearedAlertsAt: number | null;
+  dismissedAlerts: Partial<Record<MetricKey, number>>;
   isClearing: boolean;
   onClearAll: () => Promise<AuthResult>;
+  onDismissAlert: (metricKey: MetricKey, detectedAt: number) => Promise<AuthResult>;
 };
 
 function getAlertTitle(alert: ActiveAlert) {
@@ -34,15 +36,40 @@ export default function AlertScreen({
   showCritical,
   showWarning,
   clearedAlertsAt,
+  dismissedAlerts,
   isClearing,
   onClearAll,
+  onDismissAlert,
 }: AlertScreenProps) {
   const [now, setNow] = useState(new Date());
+  const [dismissingMetric, setDismissingMetric] = useState<MetricKey | null>(null);
+
+  const confirmDismissAlert = (alert: ActiveAlert) => {
+    Alert.alert(
+      `Dismiss ${alert.metric.label} alert?`,
+      'This hides the current alert but keeps all sensor readings in History. It can appear again if the reading returns to range and later becomes unsafe.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Dismiss alert',
+          style: 'destructive',
+          onPress: async () => {
+            setDismissingMetric(alert.metric.key);
+            const result = await onDismissAlert(alert.metric.key, alert.detectedAt.getTime());
+            setDismissingMetric(null);
+            if (!result.success) {
+              Alert.alert('Could not dismiss alert', result.error);
+            }
+          },
+        },
+      ],
+    );
+  };
 
   const confirmClearAll = () => {
     Alert.alert(
       'Clear visible alerts?',
-      'This dismisses the current alerts and saves the dismissal to your account. Alerts can appear again if a reading returns to range and later becomes unsafe.',
+      'This dismisses the current alerts and saves the dismissal to your account. Sensor readings remain in History. Alerts can appear again if a reading returns to range and later becomes unsafe.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -72,7 +99,9 @@ export default function AlertScreen({
   );
 
   const visibleAlerts = notMuted
-    .filter((alert) => !clearedAlertsAt || alert.detectedAt.getTime() > clearedAlertsAt)
+    .filter((alert) =>
+      (!clearedAlertsAt || alert.detectedAt.getTime() > clearedAlertsAt) &&
+      alert.detectedAt.getTime() > (dismissedAlerts[alert.metric.key] ?? 0))
     .sort((a, b) => b.detectedAt.getTime() - a.detectedAt.getTime());
 
   const criticalCount = visibleAlerts.filter((alert) => alert.severity === 'critical').length;
@@ -195,6 +224,21 @@ export default function AlertScreen({
                   </Text>
                 </View>
               </View>
+              <Pressable
+                onPress={() => confirmDismissAlert(alert)}
+                disabled={dismissingMetric !== null || isClearing}
+                accessibilityRole="button"
+                accessibilityLabel={`Dismiss ${alert.metric.label} alert`}
+                style={({ pressed }) => [
+                  screenStyles.dismissButton,
+                  (dismissingMetric !== null || isClearing) && screenStyles.dismissButtonDisabled,
+                  pressed && screenStyles.dismissButtonPressed,
+                ]}
+              >
+                <Text style={screenStyles.dismissButtonText}>
+                  {dismissingMetric === alert.metric.key ? 'Saving…' : 'Dismiss this alert'}
+                </Text>
+              </Pressable>
             </View>
           );
         })}
@@ -233,3 +277,19 @@ export default function AlertScreen({
     </ScrollView>
   );
 }
+
+const screenStyles = {
+  dismissButton: {
+    alignSelf: 'flex-end' as const,
+    backgroundColor: '#FFFFFF',
+    borderColor: '#CAD9DE',
+    borderRadius: 10,
+    borderWidth: 1,
+    marginTop: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  dismissButtonDisabled: { opacity: 0.5 },
+  dismissButtonPressed: { opacity: 0.7 },
+  dismissButtonText: { color: '#49656D', fontSize: 11, fontWeight: '800' as const },
+};

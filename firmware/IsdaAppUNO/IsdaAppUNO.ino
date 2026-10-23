@@ -24,6 +24,7 @@ String firebaseIdToken = "";
 String firebaseRefreshToken = "";
 unsigned long lastTokenRefresh = 0;
 const unsigned long tokenRefreshInterval = 50UL * 60UL * 1000UL;
+bool internetAvailable = true;
 String ssid = "";
 String pass = "";
 bool portalActive = false;
@@ -36,6 +37,8 @@ unsigned long lastSerialLogUpload = 0;
 const unsigned long serialLogUploadInterval = 10000;
 unsigned long lastDeviceConfigFetch = 0;
 const unsigned long deviceConfigFetchInterval = 60000;
+unsigned long lastWiFiReconnectAttempt = 0;
+const unsigned long wifiReconnectInterval = 15000;
 const uint8_t maxSerialLogEntries = 10;
 struct SerialLogEntry {
   uint32_t sequence;
@@ -70,23 +73,16 @@ bool isECFirstRead = true, isTDSFirstRead = true, isTurbidityFirstRead = true;
 
 float calculatedpH = 7.0, calculatedDO = 6.0, calculatedEC = 0.0, calculatedTDS = 0.0, calculatedNTU = 0.0;
 
-bool isTempCritical = false;
-bool isPHCritical = false;
-bool isDOCritical = false;
-bool isECCritical = false;
-bool isTDSCritical = false;
-bool isTurbidityCritical = false;
-bool isTempWarning = false;
-bool isPHWarning = false;
-bool isDOWarning = false;
-bool isECWarning = false;
-bool isTDSWarning = false;
-bool isTurbidityWarning = false;
+bool smsSentForTempCritical = false;
+bool smsSentForPHCritical = false;
+bool smsSentForDOCritical = false;
+bool smsSentForECCritical = false;
+bool smsSentForTDSCritical = false;
+bool smsSentForTurbidityCritical = false;
 
 String alertPhoneNumber = "";
 bool smsNotificationsEnabled = false;
 bool smsCriticalEnabled = false;
-bool smsWarningEnabled = false;
 
 const uint16_t DO_Table[41] = {
     14460, 14220, 13820, 13440, 13090, 12740, 12420, 12110, 11810, 11530,
@@ -280,6 +276,12 @@ bool readHttpResponse(WiFiSSLClient& client, String& statusLine, String& body) {
   unsigned long startedAt = millis();
   statusLine = client.readStringUntil('\n');
   statusLine.trim();
+  if (!statusLine.startsWith("HTTP/")) {
+    internetAvailable = false;
+    client.stop();
+    return false;
+  }
+  internetAvailable = true;
   bool chunked = false;
 
   while (client.connected() || client.available()) {
@@ -350,6 +352,7 @@ bool readHttpResponse(WiFiSSLClient& client, String& statusLine, String& body) {
 bool sendFirebaseAuthRequest(const char* host, const String& requestPath, const String& requestBody, String& responseBody) {
   WiFiSSLClient authClient;
   if (!authClient.connect(host, 443)) {
+    internetAvailable = false;
     logSerial("[Firebase Auth] HTTPS connection failed.");
     return false;
   }
@@ -444,6 +447,7 @@ void fetchPhoneNumberFromFirebase() {
   if (!ensureDeviceToken()) return;
   lastDeviceConfigFetch = millis();
   if (!sslClient.connect(firebaseHost, 443)) {
+    internetAvailable = false;
     logSerial("[Firebase] Could not fetch device settings.");
     return;
   }
@@ -463,7 +467,6 @@ void fetchPhoneNumberFromFirebase() {
     alertPhoneNumber = normalizeSmsPhoneNumber(readJsonString(responseBody, "alertNumber"));
     smsNotificationsEnabled = readJsonBool(responseBody, "smsEnabled");
     smsCriticalEnabled = readJsonBool(responseBody, "smsCritical");
-    smsWarningEnabled = readJsonBool(responseBody, "smsWarning");
     applySerialLogClearMarkers(readJsonString(responseBody, "serialLogClear"));
     logSerial("[Firebase] SMS settings refreshed.");
   } else {
@@ -627,10 +630,8 @@ void readSensors() {
 // ---------------------------------------------------------------
 // SMS alerts
 // ---------------------------------------------------------------
-void sendSMS(String message, bool critical) {
-  if (!smsNotificationsEnabled || alertPhoneNumber.length() == 0) return;
-  if (critical && !smsCriticalEnabled) return;
-  if (!critical && !smsWarningEnabled) return;
+bool sendCriticalSMS(const String& message) {
+  if (!smsNotificationsEnabled || !smsCriticalEnabled || alertPhoneNumber.length() == 0) return false;
   Serial1.println("AT+CMGF=1");
   delay(100);
   Serial1.print("AT+CMGS=\"");
@@ -641,77 +642,58 @@ void sendSMS(String message, bool critical) {
   delay(100);
   Serial1.write(26);
   delay(2000);
+  return true;
 }
 
 void updateSmsAlertState(
   bool critical,
-  bool warning,
-  bool& wasCritical,
-  bool& wasWarning,
-  const String& criticalMessage,
-  const String& warningMessage
+  bool& smsSentForIncident,
+  const String& criticalMessage
 ) {
   if (critical) {
-    if (!wasCritical) sendSMS(criticalMessage, true);
-    wasCritical = true;
-    wasWarning = false;
-  } else if (warning) {
-    if (!wasWarning) sendSMS(warningMessage, false);
-    wasCritical = false;
-    wasWarning = true;
+    if (!internetAvailable && !smsSentForIncident) {
+      smsSentForIncident = sendCriticalSMS(criticalMessage);
+    }
   } else {
-    wasCritical = false;
-    wasWarning = false;
+    smsSentForIncident = false;
   }
 }
 
 void evaluateThresholds() {
   bool tempCritical = smoothedCalTempC < 10.0 || smoothedCalTempC > 35.0;
-  bool tempWarning = !tempCritical && (smoothedCalTempC < 25.0 || smoothedCalTempC > 32.0);
   updateSmsAlertState(
-    tempCritical, tempWarning, isTempCritical, isTempWarning,
-    "CRITICAL: Temp " + String(smoothedCalTempC, 1) + "C",
-    "WARNING: Temp " + String(smoothedCalTempC, 1) + "C"
+    tempCritical, smsSentForTempCritical,
+    "CRITICAL: Temp " + String(smoothedCalTempC, 1) + "C"
   );
 
   bool phCritical = calculatedpH < 4.0 || calculatedpH > 9.0;
-  bool phWarning = !phCritical && calculatedpH < 6.5;
   updateSmsAlertState(
-    phCritical, phWarning, isPHCritical, isPHWarning,
-    "CRITICAL: pH " + String(calculatedpH, 1),
-    "WARNING: pH " + String(calculatedpH, 1)
+    phCritical, smsSentForPHCritical,
+    "CRITICAL: pH " + String(calculatedpH, 1)
   );
 
   bool doCritical = calculatedDO < 3.0;
-  bool doWarning = !doCritical && calculatedDO <= 5.0;
   updateSmsAlertState(
-    doCritical, doWarning, isDOCritical, isDOWarning,
-    "CRITICAL: DO " + String(calculatedDO, 1) + " mg/L",
-    "WARNING: DO " + String(calculatedDO, 1) + " mg/L"
+    doCritical, smsSentForDOCritical,
+    "CRITICAL: DO " + String(calculatedDO, 1) + " mg/L"
   );
 
   bool ecCritical = calculatedEC > 5.0;
-  bool ecWarning = !ecCritical && (calculatedEC < 0.1 || calculatedEC > 2.0);
   updateSmsAlertState(
-    ecCritical, ecWarning, isECCritical, isECWarning,
-    "CRITICAL: EC " + String(calculatedEC, 2),
-    "WARNING: EC " + String(calculatedEC, 2)
+    ecCritical, smsSentForECCritical,
+    "CRITICAL: EC " + String(calculatedEC, 2)
   );
 
   bool tdsCritical = calculatedTDS > 350.0;
-  bool tdsWarning = !tdsCritical && calculatedTDS < 150.0;
   updateSmsAlertState(
-    tdsCritical, tdsWarning, isTDSCritical, isTDSWarning,
-    "CRITICAL: TDS " + String(calculatedTDS, 0),
-    "WARNING: TDS " + String(calculatedTDS, 0)
+    tdsCritical, smsSentForTDSCritical,
+    "CRITICAL: TDS " + String(calculatedTDS, 0)
   );
 
   bool turbidityCritical = calculatedNTU < 10.0 || calculatedNTU > 150.0;
-  bool turbidityWarning = !turbidityCritical && (calculatedNTU < 30.0 || calculatedNTU > 80.0);
   updateSmsAlertState(
-    turbidityCritical, turbidityWarning, isTurbidityCritical, isTurbidityWarning,
-    "CRITICAL: Turbidity " + String(calculatedNTU, 1),
-    "WARNING: Turbidity " + String(calculatedNTU, 1)
+    turbidityCritical, smsSentForTurbidityCritical,
+    "CRITICAL: Turbidity " + String(calculatedNTU, 1)
   );
 }
 
@@ -724,6 +706,7 @@ void pushToFirebase() {
     return;
   }
   if (!sslClient.connect(firebaseHost, 443)) {
+    internetAvailable = false;
     logSerial("[Firebase] Data connection failed.");
     return;
   }
@@ -762,6 +745,7 @@ void pushToFirebase() {
 void pushSerialMonitorToFirebase() {
   if (serialLogCount == 0 || !ensureDeviceToken()) return;
   if (!sslClient.connect(firebaseHost, 443)) {
+    internetAvailable = false;
     logSerial("[Firebase] Serial monitor connection failed.");
     return;
   }
@@ -801,11 +785,14 @@ void loop() {
     readSensors();
     evaluateThresholds();
 
-    // If Wi-Fi dropped, try to reconnect before resorting to a reset
+    // Keep sampling and allow SIM SMS alerts while the internet link is down.
     if (WiFi.status() != WL_CONNECTED) {
-      logSerial("[WiFi] Connection lost, reconnecting...");
-      if (!connectWiFi(ssid, pass)) {
-        NVIC_SystemReset();
+      internetAvailable = false;
+      if (lastWiFiReconnectAttempt == 0 ||
+          millis() - lastWiFiReconnectAttempt >= wifiReconnectInterval) {
+        logSerial("[WiFi] Connection lost, retrying in background.");
+        WiFi.begin(ssid.c_str(), pass.c_str());
+        lastWiFiReconnectAttempt = millis();
       }
     }
 

@@ -17,6 +17,7 @@ import {
   View,
 } from 'react-native';
 import { formatValue, metrics } from '../metrics';
+import PasswordVisibilityIcon from '../components/PasswordVisibilityIcon';
 import { styles } from '../styles';
 import { AuthResult, ManagedDevice, NotificationPreferences, PondReading, SensorLog } from '../types';
 import * as XLSX from 'xlsx-js-style';
@@ -171,6 +172,7 @@ export default function SettingsScreen({
   const [deletingAccount, setDeletingAccount] = useState(false);
   const [deviceIdDraft, setDeviceIdDraft] = useState('');
   const [deviceClaimCodeDraft, setDeviceClaimCodeDraft] = useState('');
+  const [deviceClaimCodeVisible, setDeviceClaimCodeVisible] = useState(false);
   const [deviceNameDraft, setDeviceNameDraft] = useState('');
   const [deviceError, setDeviceError] = useState<string | null>(null);
   const [deviceBusy, setDeviceBusy] = useState<string | null>(null);
@@ -578,7 +580,9 @@ export default function SettingsScreen({
           icon: 'SMS',
           iconBg: '#E6F5F5',
           title: 'SMS Notifications',
-          subtitle: preferences.smsNotifications ? 'SMS alerts are enabled' : 'SMS alerts are disabled',
+          subtitle: preferences.smsNotifications
+            ? 'Offline backup · critical readings only'
+            : 'Critical SMS backup is disabled',
         },
         {
           key: 'smsCritical',
@@ -588,17 +592,7 @@ export default function SettingsScreen({
           icon: '🚨',
           iconBg: '#FCE8EA',
           title: 'SMS Critical Alerts',
-          subtitle: 'Send an SMS for critical sensor readings',
-        },
-        {
-          key: 'smsWarning',
-          type: 'toggle',
-          toggleKey: 'smsWarning',
-          disabled: !preferences.smsNotifications,
-          icon: '⚠️',
-          iconBg: '#FFF3D5',
-          title: 'SMS Warning Alerts',
-          subtitle: 'Send an SMS for warning sensor readings',
+          subtitle: 'Send SMS only if internet is unavailable during a critical alert',
         },
       ],
     },
@@ -755,7 +749,7 @@ export default function SettingsScreen({
             Or paste the QR code text into the fields below.
           </Text>
           <Text style={[styles.inputLabel, screenStyles.deviceFieldLabel]}>PRIVATE CLAIM CODE</Text>
-          <View style={styles.inputRow}>
+          <View style={screenStyles.deviceClaimCodeRow}>
             <TextInput
               value={deviceClaimCodeDraft}
               onChangeText={(value) => { setDeviceClaimCodeDraft(value); setDeviceError(null); }}
@@ -763,10 +757,18 @@ export default function SettingsScreen({
               placeholderTextColor="#6A8188"
               autoCapitalize="none"
               autoCorrect={false}
-              secureTextEntry
-              style={styles.textInput}
+              secureTextEntry={!deviceClaimCodeVisible}
+              style={screenStyles.deviceClaimCodeInput}
               accessibilityLabel="Private device claim code"
             />
+            <Pressable
+              onPress={() => setDeviceClaimCodeVisible((visible) => !visible)}
+              style={screenStyles.deviceSmallButton}
+              accessibilityRole="button"
+              accessibilityLabel={deviceClaimCodeVisible ? 'Hide entered claim code' : 'Show entered claim code'}
+            >
+              <PasswordVisibilityIcon visible={deviceClaimCodeVisible} />
+            </Pressable>
           </View>
           <Text style={[styles.inputLabel, screenStyles.deviceFieldLabel]}>POND NAME (OPTIONAL)</Text>
           <View style={styles.inputRow}>
@@ -824,7 +826,7 @@ export default function SettingsScreen({
                 if (!preferences.pushNotifications && (row.key === 'alertNotifications' || row.key === 'warningNotifications')) {
                   return false;
                 }
-                if (!preferences.smsNotifications && (row.key === 'smsCritical' || row.key === 'smsWarning')) {
+                if (!preferences.smsNotifications && row.key === 'smsCritical') {
                   return false;
                 }
                 return true;
@@ -923,7 +925,7 @@ export default function SettingsScreen({
               contentContainerStyle={screenStyles.profileModalContent}
             >
             <Text style={styles.authCardTitle}>Account Profile</Text>
-            <Text style={styles.authCardSubtitle}>Update your contact details. Your phone number is also used for SMS alerts.</Text>
+            <Text style={styles.authCardSubtitle}>Update your contact details. Your number receives critical SMS backups when the board cannot reach Firebase.</Text>
 
             <View style={styles.inputGroup}>
               <Text style={styles.inputLabel}>FIRST NAME</Text>
@@ -983,7 +985,7 @@ export default function SettingsScreen({
                   style={screenStyles.profilePhoneInput}
                 />
               </View>
-              <Text style={screenStyles.profilePhoneHint}>Optional. Used for SMS alerts when a pond reaches critical condition.</Text>
+              <Text style={screenStyles.profilePhoneHint}>Optional. Used for critical SMS backups when the board has no internet connection.</Text>
             </View>
 
             <Text style={styles.settingsRowSubtitle}>Google account: {accountEmail}</Text>
@@ -1059,9 +1061,7 @@ export default function SettingsScreen({
                     accessibilityRole="button"
                     accessibilityLabel={deviceDetailsClaimCodeVisible ? 'Hide claim code' : 'Show claim code'}
                   >
-                    <Text style={screenStyles.deviceSmallButtonText}>
-                      {deviceDetailsClaimCodeVisible ? 'Hide' : 'Show'}
-                    </Text>
+                    <PasswordVisibilityIcon visible={deviceDetailsClaimCodeVisible} />
                   </Pressable>
                 </View>
                 <Text style={screenStyles.profilePhoneHint}>

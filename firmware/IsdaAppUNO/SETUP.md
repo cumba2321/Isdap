@@ -37,14 +37,20 @@ This firmware signs in as a dedicated Firebase Authentication user. Realtime Dat
 
    In a QR payload, the app treats everything after `ISDAAPP:device-id:` as the claim code, so the claim code may itself contain colons.
 
-   `deviceSecrets` is administrative and stays private. The device UID can read its own device configuration. After a user claims the device, the app writes the shared account SMS recipient and alert preferences to that device's `alertNumber`, `smsEnabled`, `smsCritical`, and `smsWarning` fields under the published rules.
+   `deviceSecrets` is administrative and stays private. The device UID can read its own device configuration. After a user claims the device, the app writes the shared account SMS recipient and critical-alert preference to that device's `alertNumber`, `smsEnabled`, and `smsCritical` fields under the published rules. `smsWarning` is kept false for compatibility; firmware sends SMS for critical levels only.
 
 5. Do not publish the restrictive rules yet. First upload the authenticated firmware below so the board is ready to sign in and write to its per-device paths.
 
 ## Prepare the sketch
 
-1. Copy `Secrets.h.example` to `Secrets.h` in this sketch folder. The real `Secrets.h` is git-ignored.
-2. Fill in the ID, Firebase device-account email/password, and Firebase Web API key from `firebaseConfig.ts`. Keep the device password private and never commit `Secrets.h`.
+1. In PowerShell, run this command from the repository root:
+
+   ```powershell
+   Copy-Item .\firmware\IsdaAppUNO\Secrets.h.example .\firmware\IsdaAppUNO\Secrets.h
+   ```
+
+   Alternatively, copy `Secrets.h.example` in File Explorer and rename the copy to exactly `Secrets.h` in the same folder as `IsdaAppUNO.ino`. Make sure Windows has not added a `.txt` extension. The real `Secrets.h` is git-ignored.
+2. Open `Secrets.h` and replace the example values for the device ID, Firebase device-account email/password, and Firebase Web API key from `firebaseConfig.ts`. The `.invalid` email and `REPLACE_WITH_...` values in the example are placeholders and will not authenticate. Keep the device password private and never commit or share `Secrets.h`.
 3. Open `IsdaAppUNO.ino` in Arduino IDE, install the existing OneWire and DallasTemperature libraries, choose **Arduino UNO R4 WiFi** and its port, then compile and upload.
 4. Open Serial Monitor at 115200 baud. A successful setup should show that the device account signed in and readings are being uploaded. Firmware serial messages and sensor summaries are also published to the app's Serial Monitor; Firebase keeps only the most recent 10 messages for each device.
 5. In **Realtime Database → Rules**, replace the rules with the contents of the repository's `database.rules.json` and publish. Existing root-level/public rules must not remain above or alongside these rules.
@@ -55,7 +61,8 @@ This firmware signs in as a dedicated Firebase Authentication user. Realtime Dat
 - They enter the device ID and private claim code, or paste the QR payload into the Device ID field. The app claims the database record atomically; a device already owned by another UID cannot be claimed.
 - Unlinking removes the owner's claim and app-list entry in one Realtime Database update. The board continues uploading, and another signed-in user with the private code can claim it.
 - The device ID is public routing information, not a credential. The claim code and device Firebase password are credentials.
-- In **Settings → Notifications**, enabling SMS reveals the shared recipient number field. The app stores and sends the recipient in international format, such as `+639171234567` (the local `0917...` form is converted to `+63917...`). The firmware also normalizes Philippine local numbers beginning with `09` to `+639` when reading the setting, and accepts international numbers beginning with `+`. The app updates every device linked to that account. The firmware refreshes these settings from Firebase about once per minute, so a changed number or SMS preference takes effect without uploading new firmware.
+- In **Settings → Notifications**, enabling SMS reveals the shared recipient number field and enables SMS as a backup only when the board cannot reach Firebase over the internet. The board sends SMS only for critical-level readings while offline; warning alerts are never sent by SMS. While Firebase is reachable, critical and warning alerts continue through the app and configured push notifications, with no SMS sent. The board uses its last successfully fetched SMS settings during an outage, provided it has not been power-cycled since fetching them. The app stores and sends the recipient in international format, such as `+639171234567` (the local `0917...` form is converted to `+63917...`). The firmware also normalizes Philippine local numbers beginning with `09` to `+639` when reading the setting, and accepts international numbers beginning with `+`. The app updates every device linked to that account. The firmware refreshes these settings from Firebase about once per minute, so a changed number or SMS preference takes effect without uploading new firmware.
+- History is grouped by local calendar day in the app and loads the latest 100 readings first. Use **Load older readings** to fetch earlier pages. Grouping changes only the display; the app continues to store each reading in Firebase at its current sampling rate. Apply the `recordedAt` index in `database.rules.json` when publishing rules so date-ordered paging stays efficient.
 - Clearing the Serial Monitor in the app deletes its Firebase snapshot and records a clear marker for the firmware. The board removes the cleared entries from its in-memory log buffer when it next refreshes device settings (within about one minute); later firmware messages are stored normally. Upload the updated firmware and publish the updated database rules for this behavior.
 - The SIM800L must have an active SIM with SMS service, sufficient credit, and a suitable stable power supply. The app cannot provide the carrier service or SIM balance.
 

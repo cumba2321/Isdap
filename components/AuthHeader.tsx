@@ -11,7 +11,7 @@ export default function AuthHeader({ tagline }: AuthHeaderProps) {
       <View style={styles.authLogoCircle}>
         <Image
           source={require('../assets/isdapp-logo.png')}
-          style={{ height: 78, width: 78 }}
+          style={{ height: 68, width: 68 }}
           resizeMode="contain"
           accessibilityLabel="IsdaApp water-quality logo"
         />

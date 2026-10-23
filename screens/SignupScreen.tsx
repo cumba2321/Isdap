@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { GoogleSigninButton } from '@react-native-google-signin/google-signin';
 import {
   KeyboardAvoidingView,
   Platform,
@@ -14,6 +15,7 @@ import CountryPicker, { Country, CountryCode } from 'react-native-country-picker
 import { AsYouType, parsePhoneNumberFromString } from 'libphonenumber-js';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AuthHeader from '../components/AuthHeader';
+import PasswordVisibilityIcon from '../components/PasswordVisibilityIcon';
 import { styles } from '../styles';
 import { AuthResult } from '../types';
 
@@ -32,7 +34,7 @@ type GoogleVerificationResult =
 
 type SignupScreenProps = {
   onVerifyGoogle: () => Promise<GoogleVerificationResult>;
-  onCreateAccount: (profile: SignupProfile) => Promise<AuthResult>;
+  onCreateAccount: (profile: SignupProfile, password: string) => Promise<AuthResult>;
   onNavigateSignIn: () => void;
 };
 
@@ -44,6 +46,9 @@ export default function SignupScreen({ onVerifyGoogle, onCreateAccount, onNaviga
   const [existingAccountFound, setExistingAccountFound] = useState(false);
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordVisible, setPasswordVisible] = useState(false);
   const [phoneNumber, setPhoneNumber] = useState('');
   const [countryCode, setCountryCode] = useState<CountryCode>('PH');
   const [countryName, setCountryName] = useState('Philippines');
@@ -77,6 +82,14 @@ export default function SignupScreen({ onVerifyGoogle, onCreateAccount, onNaviga
       setError('Enter your first name and last name to continue.');
       return;
     }
+    if (password.length < 6) {
+      setError('Create a password with at least 6 characters.');
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError('Passwords do not match.');
+      return;
+    }
     let normalizedPhone = '';
     if (phoneNumber.trim()) {
       const parsedPhone = callingCode
@@ -100,7 +113,7 @@ export default function SignupScreen({ onVerifyGoogle, onCreateAccount, onNaviga
         countryName,
         countryCallingCode: callingCode,
         phoneNumber: normalizedPhone,
-      });
+      }, password);
       if (!result.success) setError(result.error);
     } catch {
       setError('Unable to create your account right now. Check your connection and try again.');
@@ -142,7 +155,7 @@ export default function SignupScreen({ onVerifyGoogle, onCreateAccount, onNaviga
         <RNStatusBar barStyle="dark-content" />
         <ScrollView contentContainerStyle={screenStyles.scroll} keyboardShouldPersistTaps="handled">
           <AuthHeader tagline="IoT Water Quality Monitoring System" />
-          <View style={styles.authCard}>
+          <View style={[styles.authCard, screenStyles.authCard]}>
           <Text style={styles.authCardTitle}>Create your account</Text>
           <Text style={styles.authCardSubtitle}>
             Verify your Google account first. If it is new to IsdaApp, you can then enter your details.
@@ -233,6 +246,62 @@ export default function SignupScreen({ onVerifyGoogle, onCreateAccount, onNaviga
                 />
               </View>
               <View style={screenStyles.field}>
+                <Text style={screenStyles.inputLabel}>CREATE PASSWORD</Text>
+                <View style={screenStyles.passwordRow}>
+                  <TextInput
+                    value={password}
+                    onChangeText={setPassword}
+                    placeholder="At least 6 characters"
+                    placeholderTextColor="#8A9BA0"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    secureTextEntry={!passwordVisible}
+                    textContentType="newPassword"
+                    returnKeyType="next"
+                    style={[screenStyles.input, screenStyles.passwordInput]}
+                    accessibilityLabel="Create account password"
+                  />
+                  <Pressable
+                    onPress={() => setPasswordVisible((visible) => !visible)}
+                    style={screenStyles.passwordVisibilityButton}
+                    accessibilityRole="button"
+                    accessibilityLabel={passwordVisible ? 'Hide password' : 'Show password'}
+                  >
+                    <PasswordVisibilityIcon visible={passwordVisible} />
+                  </Pressable>
+                </View>
+                <Text style={screenStyles.phoneHelp}>Use any password with at least 6 characters. You’ll enter it after Google sign-in.</Text>
+              </View>
+              <View style={screenStyles.field}>
+                <Text style={screenStyles.inputLabel}>CONFIRM PASSWORD</Text>
+                <View style={[screenStyles.passwordRow, confirmPassword.length > 0 && confirmPassword !== password && screenStyles.inputInvalid]}>
+                  <TextInput
+                    value={confirmPassword}
+                    onChangeText={setConfirmPassword}
+                    placeholder="Re-enter your password"
+                    placeholderTextColor="#8A9BA0"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    secureTextEntry={!passwordVisible}
+                    textContentType="newPassword"
+                    returnKeyType="done"
+                    style={[screenStyles.input, screenStyles.passwordInput]}
+                    accessibilityLabel="Confirm account password"
+                  />
+                  <Pressable
+                    onPress={() => setPasswordVisible((visible) => !visible)}
+                    style={screenStyles.passwordVisibilityButton}
+                    accessibilityRole="button"
+                    accessibilityLabel={passwordVisible ? 'Hide password' : 'Show password'}
+                  >
+                    <PasswordVisibilityIcon visible={passwordVisible} />
+                  </Pressable>
+                </View>
+                {confirmPassword.length > 0 && confirmPassword !== password ? (
+                  <Text style={screenStyles.errorText}>Passwords do not match.</Text>
+                ) : null}
+              </View>
+              <View style={screenStyles.field}>
                 <Text style={screenStyles.inputLabel}>COUNTRY</Text>
                 <View style={screenStyles.countryRow}>
                   <CountryPicker
@@ -261,7 +330,7 @@ export default function SignupScreen({ onVerifyGoogle, onCreateAccount, onNaviga
                     accessibilityLabel="Phone number"
                   />
                 </View>
-                <Text style={screenStyles.phoneHelp}>Optional. Used for SMS alerts if your pond reaches a critical condition. Saved in international format.</Text>
+                <Text style={screenStyles.phoneHelp}>Optional. Used for critical SMS backups if the board loses internet. Saved in international format.</Text>
                 {phoneError ? <Text style={screenStyles.errorText}>{phoneError}</Text> : null}
               </View>
             </>
@@ -273,23 +342,34 @@ export default function SignupScreen({ onVerifyGoogle, onCreateAccount, onNaviga
             </View>
           ) : null}
 
-          <Pressable
-            onPress={isGoogleVerified ? handleCreateAccount : handleGoogleVerification}
-            disabled={isSubmitting || existingAccountFound}
-            style={({ pressed }) => [
-              styles.primaryButton,
-              screenStyles.mainButton,
-              isSubmitting && styles.primaryButtonDisabled,
-              pressed && styles.tabButtonPressed,
-            ]}
-            accessibilityRole="button"
-          >
-            <Text style={styles.primaryButtonText}>
-              {isSubmitting
-                ? isGoogleVerified ? 'Creating account...' : 'Verifying Google account...'
-                : isGoogleVerified ? 'CREATE ACCOUNT' : 'VERIFY WITH GOOGLE'}
-            </Text>
-          </Pressable>
+          {isGoogleVerified ? (
+            <Pressable
+              onPress={handleCreateAccount}
+              disabled={isSubmitting || existingAccountFound}
+              style={({ pressed }) => [
+                styles.primaryButton,
+                screenStyles.mainButton,
+                isSubmitting && styles.primaryButtonDisabled,
+                pressed && styles.tabButtonPressed,
+              ]}
+              accessibilityRole="button"
+            >
+              <Text style={styles.primaryButtonText}>
+                {isSubmitting ? 'Creating account...' : 'CREATE ACCOUNT'}
+              </Text>
+            </Pressable>
+          ) : (
+            <View style={[styles.authGoogleButtonFrame, screenStyles.mainButton]}>
+              <GoogleSigninButton
+                onPress={handleGoogleVerification}
+                disabled={isSubmitting || existingAccountFound}
+                size={GoogleSigninButton.Size.Standard}
+                color={GoogleSigninButton.Color.Light}
+                style={styles.authGoogleButton}
+                accessibilityLabel={isSubmitting ? 'Verifying Google account' : 'Verify with Google'}
+              />
+            </View>
+          )}
 
           <Pressable
             onPress={onNavigateSignIn}
@@ -310,9 +390,10 @@ const screenStyles = StyleSheet.create({
   scroll: {
     flexGrow: 1,
     justifyContent: 'center',
-    padding: 20,
-    paddingVertical: 32,
+    paddingHorizontal: 18,
+    paddingVertical: 28,
   },
+  authCard: { alignSelf: 'center' },
   mainButton: {
     marginTop: 16,
   },
@@ -329,6 +410,17 @@ const screenStyles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
+  passwordRow: {
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderColor: '#D5E0E3',
+    borderRadius: 12,
+    borderWidth: 1,
+    flexDirection: 'row',
+    paddingRight: 8,
+  },
+  passwordInput: { borderColor: 'transparent', flex: 1, minWidth: 0 },
+  passwordVisibilityButton: { paddingHorizontal: 9, paddingVertical: 10 },
   phoneRow: {
     alignItems: 'center',
     backgroundColor: '#FFFFFF',
