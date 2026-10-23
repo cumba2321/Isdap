@@ -4,6 +4,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import Swipeable from 'react-native-gesture-handler/Swipeable';
 import * as XLSX from 'xlsx-js-style';
+import FishMascot from '../components/FishMascot';
 import { formatValue, metrics } from '../metrics';
 import { styles } from '../styles';
 import { AuthResult, SensorLog } from '../types';
@@ -205,9 +206,10 @@ export default function HistoryScreen({
 
       {!isLoading && logs.length === 0 && (
         <View style={screenStyles.emptyCard}>
-          <View style={screenStyles.emptyIcon}>
-            <Text style={screenStyles.emptyIconText}>↻</Text>
-          </View>
+          <FishMascot
+            style={screenStyles.emptyMascot}
+            accessibilityLabel="Fish mascot welcoming you to your reading history"
+          />
           <Text style={screenStyles.emptyEyebrow}>READING ARCHIVE</Text>
           <Text style={screenStyles.emptyTitle}>Your history starts here</Text>
           <Text style={screenStyles.emptyCopy}>
@@ -338,17 +340,7 @@ const screenStyles = StyleSheet.create({
     paddingHorizontal: 28,
     paddingVertical: 30,
   },
-  emptyIcon: {
-    alignItems: 'center',
-    backgroundColor: '#E8F5F2',
-    borderColor: '#D8EBE7',
-    borderRadius: 30,
-    borderWidth: 1,
-    height: 58,
-    justifyContent: 'center',
-    width: 58,
-  },
-  emptyIconText: { color: '#087C73', fontSize: 29, fontWeight: '500', lineHeight: 34 },
+  emptyMascot: { height: 112, width: 136 },
   emptyEyebrow: { color: '#71868C', fontSize: 9, fontWeight: '800', letterSpacing: 1.4, marginTop: 18 },
   emptyTitle: { color: '#1D343B', fontSize: 17, fontWeight: '800', marginTop: 7, textAlign: 'center' },
   emptyCopy: { color: '#71868C', fontSize: 12, lineHeight: 18, marginTop: 6, maxWidth: 250, textAlign: 'center' },

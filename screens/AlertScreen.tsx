@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
+import FishMascot from '../components/FishMascot';
 import { formatValue } from '../metrics';
 import { styles } from '../styles';
 import { ActiveAlert, AuthResult, MetricKey } from '../types';
@@ -47,7 +48,7 @@ export default function AlertScreen({
   const confirmDismissAlert = (alert: ActiveAlert) => {
     Alert.alert(
       `Dismiss ${alert.metric.label} alert?`,
-      'This hides the current alert but keeps all sensor readings in History. It can appear again if the reading returns to range and later becomes unsafe.',
+      'This hides the current alert but keeps all device readings in History. It can appear again if the reading returns to range and later becomes unsafe.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -69,7 +70,7 @@ export default function AlertScreen({
   const confirmClearAll = () => {
     Alert.alert(
       'Clear visible alerts?',
-      'This dismisses the current alerts and saves the dismissal to your account. Sensor readings remain in History. Alerts can appear again if a reading returns to range and later becomes unsafe.',
+      'This dismisses the current alerts and saves the dismissal to your account. Device readings remain in History. Alerts can appear again if a reading returns to range and later becomes unsafe.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -133,14 +134,14 @@ export default function AlertScreen({
           </View>
           <View style={styles.alertsSummaryBody}>
             <Text style={styles.alertsSummaryEyebrow}>
-              {!hasDevice ? 'SENSOR STATUS' : isMuted ? 'NOTIFICATION STATUS' : hasAlerts ? 'MONITORING STATUS' : 'POND STATUS'}
+              {!hasDevice ? 'DEVICE STATUS' : isMuted ? 'NOTIFICATION STATUS' : hasAlerts ? 'MONITORING STATUS' : 'POND STATUS'}
             </Text>
             <Text style={styles.alertsSummaryTitle}>
-              {!hasDevice ? 'Connect a sensor' : isMuted ? 'Alerts are paused' : hasAlerts ? 'Attention required' : 'Looking good'}
+              {!hasDevice ? 'Connect a device' : isMuted ? 'Alerts are paused' : hasAlerts ? 'Attention required' : 'Looking good'}
             </Text>
             <Text style={styles.alertsSummaryCopy}>
               {!hasDevice
-                ? 'Link a sensor to see live water-quality alerts here.'
+                ? 'Link a device to see live water-quality alerts here.'
                 : isMuted
                 ? 'Some readings are outside range, but alert notifications are turned off.'
                 : hasAlerts
@@ -245,15 +246,23 @@ export default function AlertScreen({
 
       {!hasAlerts && (
         <View style={styles.emptyState}>
-          <View style={styles.emptyBadge}>
-            <Text style={styles.emptyBadgeText}>{isMuted ? 'MUTE' : 'OK'}</Text>
-          </View>
+          {isMuted ? (
+            <View style={styles.emptyBadge}>
+              <Text style={styles.emptyBadgeText}>MUTE</Text>
+            </View>
+          ) : (
+            <FishMascot
+              variant={!hasDevice ? 'sad' : 'happy'}
+              style={screenStyles.emptyMascot}
+              accessibilityLabel={!hasDevice ? 'Fish mascot inviting you to connect a pond device' : 'Fish mascot celebrating no active alerts'}
+            />
+          )}
           <Text style={styles.emptyTitle}>
             {!hasDevice ? 'Your pond is not connected' : isMuted ? 'Notifications are paused' : 'No active alerts'}
           </Text>
           <Text style={styles.emptyCopy}>
             {!hasDevice
-              ? 'Link a sensor in Settings to start monitoring water quality.'
+              ? 'Link a device in Settings to start monitoring water quality.'
               : isMuted
               ? 'Some readings are outside their target ranges. Turn alerts back on in Settings to see them here.'
               : 'Everything is within range. We’ll show an alert here if a reading needs your attention.'}
@@ -279,6 +288,7 @@ export default function AlertScreen({
 }
 
 const screenStyles = {
+  emptyMascot: { height: 104, width: 128, marginBottom: 4 },
   dismissButton: {
     alignSelf: 'flex-end' as const,
     backgroundColor: '#FFFFFF',

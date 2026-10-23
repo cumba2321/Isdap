@@ -1,10 +1,9 @@
 import { useState } from 'react';
-import { Image, Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import { Modal, Pressable, ScrollView, Text, View } from 'react-native';
+import FishMascot from '../components/FishMascot';
 import { formatValue, metrics } from '../metrics';
 import { styles } from '../styles';
 import { AuthResult, ManagedDevice, PondReading } from '../types';
-
-const FISH_MASCOT = require('../assets/fish-mascot-user.gif');
 
 type DashboardScreenProps = {
   reading: PondReading;
@@ -46,7 +45,13 @@ export default function DashboardScreen({
     ? 'One or more readings are outside the target range. Review the highlighted parameters below.'
     : isLive
       ? 'Your latest readings are within their target ranges.'
-      : 'Sample readings are shown until your sensor connects.';
+      : 'Sample readings are shown until your device connects.';
+  const mascotVariant = !deviceName || !isLive ? 'sad' : hasAlert ? 'worried' : 'happy';
+  const mascotMessage = mascotVariant === 'sad'
+    ? "I can't see your pond readings yet. Check that your device is connected."
+    : mascotVariant === 'worried'
+      ? 'A reading needs your attention. Please check the pond conditions.'
+      : "I'm keeping an eye on your pond's readings. Check your dashboard for the latest update.";
   const now = new Date();
   const dateLabel = `${now.toLocaleDateString('en-US', { weekday: 'long' }).toUpperCase()}, ${now.toLocaleDateString('en-US', { month: 'long' }).toUpperCase()} ${now.getDate()}`;
   const hour = now.getHours();
@@ -89,23 +94,15 @@ export default function DashboardScreen({
         <View style={styles.dashboardMascotWaveFront} />
         <View
           accessible
-          accessibilityLabel={isLive
-            ? "I'm keeping an eye on your pond's readings. Check your dashboard for the latest update."
-            : "Hi! I'm here to help you keep an eye on your pond's water quality. Connect the device to see live readings and alerts."}
+          accessibilityLabel={mascotMessage}
           style={styles.dashboardMascotDialogue}
         >
           <View style={styles.dashboardMascotDialogueTail} />
-          <Text style={styles.dashboardMascotDialogueText}>
-            {isLive
-              ? "I'm keeping an eye on your pond's readings. Check your dashboard for the latest update."
-              : "Hi! I'm here to help you keep an eye on your pond's water quality. Connect the device to see live readings and alerts."}
-          </Text>
+          <Text style={styles.dashboardMascotDialogueText}>{mascotMessage}</Text>
         </View>
-        <Image
-          source={FISH_MASCOT}
+        <FishMascot
           style={styles.dashboardMascot}
-          resizeMode="contain"
-          accessibilityLabel="IsdaApp fish mascot"
+          variant={mascotVariant}
         />
         <View style={styles.dashboardMascotSparkleTop} />
         <View style={styles.dashboardMascotSparkleSide} />
@@ -127,7 +124,7 @@ export default function DashboardScreen({
           <View style={styles.devicePickerSheet}>
             <View style={styles.devicePickerHeading}>
               <View>
-                <Text style={styles.devicePickerEyebrow}>YOUR SENSORS</Text>
+                <Text style={styles.devicePickerEyebrow}>YOUR DEVICES</Text>
                 <Text style={styles.devicePickerTitle}>Switch pond</Text>
               </View>
               <Pressable
@@ -213,7 +210,7 @@ export default function DashboardScreen({
           <View style={[styles.pulse, !isLive && styles.previewPulse]} />
           <Text style={styles.updatedText}>
             {!isLive
-              ? 'Waiting for sensor data'
+              ? 'Waiting for device data'
               : autoRefreshPaused
                 ? 'Refresh paused · last updated ' +
                   lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -228,7 +225,7 @@ export default function DashboardScreen({
             <Pressable
               onPress={onManageDevices}
               accessibilityRole="button"
-              accessibilityLabel="Link a sensor"
+              accessibilityLabel="Link a device"
               style={({ pressed }) => [styles.dashboardConnectMark, pressed && styles.pressed]}
             >
               <Text style={styles.dashboardConnectMarkText}>+</Text>
@@ -236,7 +233,7 @@ export default function DashboardScreen({
             <View style={styles.dashboardConnectBody}>
               <Text style={styles.dashboardConnectTitle}>Connect your pond</Text>
               <Text style={styles.dashboardConnectCopy}>
-                Link a sensor to monitor live water quality. Current values are sample readings.
+                Link a device to monitor live water quality. Current values are sample readings.
               </Text>
             </View>
           </View>
@@ -276,7 +273,7 @@ export default function DashboardScreen({
         <View>
           <Text style={styles.sectionTitle}>Water quality</Text>
           <Text style={styles.dashboardSectionCopy}>
-            {isLive ? 'Current sensor readings' : 'Preview · sensor readings are zero'}
+            {isLive ? 'Current device readings' : 'Preview · device readings are zero'}
           </Text>
         </View>
       </View>

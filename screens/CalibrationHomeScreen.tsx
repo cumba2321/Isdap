@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Alert, Modal, Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
+import FishMascot from '../components/FishMascot';
 import { formatValue, metrics } from '../metrics';
 import {
   AuthResult,
@@ -707,7 +708,15 @@ export default function CalibrationScreen({
           </Text>
         </Pressable>
         {!calibrationOpen ? (
-          <Text style={screenStyles.helperText}>Starts calibration controls here on this screen.</Text>
+          <View style={screenStyles.helperCard}>
+            <FishMascot
+              style={screenStyles.helperMascot}
+              accessibilityLabel="Fish mascot offering calibration guidance"
+            />
+            <Text style={screenStyles.helperText}>
+              Need a hand? Follow each step and use a trusted reference when calibrating.
+            </Text>
+          </View>
         ) : (
           <View style={screenStyles.calibrationCard}>
             <View style={screenStyles.calibrationHeader}>
@@ -1049,7 +1058,21 @@ const screenStyles = StyleSheet.create({
     width: '100%',
   },
   actionText: { color: '#FFFFFF', fontSize: 17, fontWeight: '800', letterSpacing: 0.8, textAlign: 'center' },
-  helperText: { color: '#60777E', fontSize: 11, lineHeight: 16, marginTop: 11, textAlign: 'center' },
+  helperCard: {
+    alignItems: 'center',
+    alignSelf: 'stretch',
+    backgroundColor: '#FFFFFF',
+    borderColor: '#E1E9EC',
+    borderRadius: 16,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 11,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  helperMascot: { height: 58, width: 68 },
+  helperText: { color: '#60777E', flex: 1, fontSize: 11, lineHeight: 16 },
   calibrationCard: {
     alignSelf: 'stretch',
     backgroundColor: '#FFFFFF',
