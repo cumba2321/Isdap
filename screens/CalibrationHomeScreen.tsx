@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Modal, Pressable, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
+import Svg, { Circle, Path } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Clipboard from 'expo-clipboard';
 import FishMascot from '../components/FishMascot';
@@ -475,22 +476,51 @@ export default function CalibrationScreen({
         </View>
 
         <Text style={screenStyles.eyebrow}>SENSOR TOOLS</Text>
-        <Text style={screenStyles.pageTitle}>Calibration</Text>
+        <View style={screenStyles.calibrationTitleRow}>
+          <Text style={screenStyles.pageTitle}>Calibration</Text>
+          {!serialMonitorOpen ? (
+            <View style={screenStyles.monitorLaunchRow}>
+              <Pressable
+                onPress={() => {
+                  seenSerialLogIds.current = new Set();
+                  setSerialMonitorLines([]);
+                  setSerialMonitorNotice(null);
+                  setSerialMonitorOpen(true);
+                }}
+                style={({ pressed }) => [screenStyles.monitorIconButton, pressed && screenStyles.pressed]}
+                accessibilityRole="button"
+                accessibilityLabel="Open Serial Monitor"
+              >
+                <Svg width={27} height={27} viewBox="0 0 64 64" accessibilityElementsHidden>
+                  <Path
+                    d="M27 8.5A24 24 0 0 0 8.5 27M37 8.5A24 24 0 0 1 55.5 27M55.5 37A24 24 0 0 1 37 55.5M27 55.5A24 24 0 0 1 8.5 37"
+                    fill="none"
+                    stroke="#FFFFFF"
+                    strokeLinecap="round"
+                    strokeWidth="4"
+                  />
+                  <Path d="M32 5v9M5 32h9M50 32h9M32 50v9" stroke="#FFFFFF" strokeLinecap="round" strokeWidth="4" />
+                  <Circle cx="30" cy="29" r="11" fill="none" stroke="#FFFFFF" strokeWidth="4" />
+                  <Path d="m38 37 13 13" stroke="#FFFFFF" strokeLinecap="round" strokeWidth="5" />
+                </Svg>
+              </Pressable>
+              <Pressable
+                onPress={() => Alert.alert(
+                  'About Serial Monitor',
+                  'The Serial Monitor shows recent messages sent by the device firmware, including sensor readings and connection or upload status. Use it to help check what the device is reporting. It is not a live USB serial connection; the device must be online to upload its messages.',
+                  [{ text: 'Got it' }],
+                )}
+                style={({ pressed }) => [screenStyles.monitorHelpButton, pressed && screenStyles.pressed]}
+                accessibilityRole="button"
+                accessibilityLabel="What is the Serial Monitor?"
+                accessibilityHint="Shows an explanation of the Serial Monitor"
+              >
+                <Text style={screenStyles.monitorHelpText}>?</Text>
+              </Pressable>
+            </View>
+          ) : null}
+        </View>
         <Text style={screenStyles.intro}>Choose a sensor, check its live reading, then calibrate against a trusted reference.</Text>
-        {!serialMonitorOpen ? (
-          <Pressable
-            onPress={() => {
-              seenSerialLogIds.current = new Set();
-              setSerialMonitorLines([]);
-              setSerialMonitorNotice(null);
-              setSerialMonitorOpen(true);
-            }}
-            style={({ pressed }) => [screenStyles.monitorToggle, pressed && screenStyles.pressed]}
-            accessibilityRole="button"
-          >
-            <Text style={screenStyles.monitorToggleText}>OPEN SERIAL MONITOR</Text>
-          </Pressable>
-        ) : null}
         <Modal
           animationType="slide"
           onRequestClose={closeSerialMonitor}
@@ -593,25 +623,29 @@ export default function CalibrationScreen({
                   {isLive ? `${formatValue(reading.temp, 'temp')} °C` : '—'}
                 </Text>
               </View>
-              <Text style={screenStyles.voltageValue}>
-                Voltage {sensorVoltage === undefined ? '—' : `${sensorVoltage.toFixed(3)} V`}
-              </Text>
-              <Text style={[
-                screenStyles.voltageHint,
-                voltageIsStable && screenStyles.voltageHintStable,
-                voltageUpdatedAt !== null && !voltageIsFresh && screenStyles.voltageHintStale,
-              ]}>
-                {sensorVoltage === undefined
-                  ? 'Voltage unavailable'
-                  : !voltageIsFresh
-                    ? 'Voltage is stale'
-                    : voltageIsStable
-                      ? `STABLE · range ${voltageRange?.toFixed(3)} V (limit 0.015 V)`
-                      : `STABILIZING · ${recentVoltageSamples.length}/5 samples${voltageRange === null ? '' : ` · range ${voltageRange.toFixed(3)} V`}`}
-              </Text>
             </>
           ) : null}
         </Pressable>
+        {!showingTemperature ? (
+          <View style={screenStyles.readingVoltageCard}>
+            <Text style={screenStyles.voltageValue}>
+              Voltage {sensorVoltage === undefined ? '—' : `${sensorVoltage.toFixed(3)} V`}
+            </Text>
+            <Text style={[
+              screenStyles.voltageHint,
+              voltageIsStable && screenStyles.voltageHintStable,
+              voltageUpdatedAt !== null && !voltageIsFresh && screenStyles.voltageHintStale,
+            ]}>
+              {sensorVoltage === undefined
+                ? 'Voltage unavailable'
+                : !voltageIsFresh
+                  ? 'Voltage is stale'
+                  : voltageIsStable
+                    ? `STABLE · range ${voltageRange?.toFixed(3)} V (limit 0.015 V)`
+                    : `STABILIZING · ${recentVoltageSamples.length}/5 samples${voltageRange === null ? '' : ` · range ${voltageRange.toFixed(3)} V`}`}
+            </Text>
+          </View>
+        ) : null}
         <Text style={screenStyles.sensorHint}>
           Tap the circle to view the next {showingTemperature ? 'sensor' : 'sensor, including temperature'}
         </Text>
@@ -803,6 +837,11 @@ export default function CalibrationScreen({
             </Text>
             <Text style={screenStyles.currentPointTitle}>{currentPoint.label}</Text>
             <Text style={screenStyles.calibrationCopy}>{methodInstructions}</Text>
+            {selectedKey === 'ph' ? (
+              <Text style={screenStyles.calibrationCopy}>
+                This correction is saved in the app and adjusts live pH readings there. It does not change the firmware pH formula.
+              </Text>
+            ) : null}
             {!savedInThisSession ? (
               <>
                 <Text style={screenStyles.inputLabel}>STANDARD VALUE</Text>
@@ -940,18 +979,40 @@ const screenStyles = StyleSheet.create({
     paddingTop: (StatusBar.currentHeight ?? 0) + 14,
   },
   eyebrow: { alignSelf: 'stretch', color: '#60777E', fontSize: 11, fontWeight: '700', letterSpacing: 1.5, marginTop: 10 },
-  pageTitle: { alignSelf: 'stretch', color: '#172B33', fontSize: 32, fontWeight: '800', marginTop: 5 },
-  intro: { alignSelf: 'stretch', color: '#60777E', fontSize: 14, lineHeight: 21, marginTop: 8 },
-  monitorToggle: {
+  calibrationTitleRow: {
     alignItems: 'center',
     alignSelf: 'stretch',
-    backgroundColor: '#173C45',
-    borderRadius: 13,
-    justifyContent: 'center',
-    marginTop: 13,
-    minHeight: 46,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 5,
   },
-  monitorToggleText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800', letterSpacing: 0.8 },
+  pageTitle: { color: '#172B33', flex: 1, fontSize: 32, fontWeight: '800' },
+  intro: { alignSelf: 'stretch', color: '#60777E', fontSize: 14, lineHeight: 21, marginTop: 8 },
+  monitorLaunchRow: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: 8,
+    marginLeft: 8,
+  },
+  monitorIconButton: {
+    alignItems: 'center',
+    backgroundColor: '#173C45',
+    borderRadius: 12,
+    height: 44,
+    justifyContent: 'center',
+    width: 44,
+  },
+  monitorHelpButton: {
+    alignItems: 'center',
+    backgroundColor: '#E8F1F2',
+    borderColor: '#C8D8DB',
+    borderRadius: 18,
+    borderWidth: 1,
+    height: 36,
+    justifyContent: 'center',
+    width: 36,
+  },
+  monitorHelpText: { color: '#173C45', fontSize: 21, fontWeight: '800', lineHeight: 25 },
   monitorScreen: {
     backgroundColor: '#102127',
     flex: 1,
@@ -1003,7 +1064,7 @@ const screenStyles = StyleSheet.create({
     justifyContent: 'flex-start',
     maxHeight: 400,
     maxWidth: 400,
-    paddingBottom: 12,
+    paddingBottom: 20,
     paddingHorizontal: 8,
     paddingTop: 12,
     shadowColor: '#102F36',
@@ -1039,7 +1100,18 @@ const screenStyles = StyleSheet.create({
   },
   temperatureLabel: { color: '#60777E', fontSize: 9, fontWeight: '800', letterSpacing: 0.5 },
   temperatureValue: { color: '#153D46', fontSize: 14, fontWeight: '800' },
-  voltageValue: { color: '#49656D', fontSize: 14, fontWeight: '700', marginTop: 'auto' },
+  readingVoltageCard: {
+    alignItems: 'center',
+    alignSelf: 'stretch',
+    backgroundColor: '#FFFFFF',
+    borderColor: '#DCE8E8',
+    borderRadius: 12,
+    borderWidth: 1,
+    marginTop: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  voltageValue: { color: '#49656D', fontSize: 14, fontWeight: '700' },
   voltageHint: { color: '#A87500', fontSize: 9, fontWeight: '900', letterSpacing: 0.2, marginTop: 3 },
   voltageHintStable: { color: '#14734E' },
   voltageHintStale: { color: '#9D3944' },

@@ -8,7 +8,7 @@
 #include "Secrets.h"
 
 // --- Pin Definitions ---
-#define TEMP_PIN 2
+#define TEMP_PIN 6
 #define PH_PIN A0
 #define DO_PIN A1
 #define EC_PIN A2
@@ -713,10 +713,16 @@ void pushToFirebase() {
 
   String json = "{\"temp\":" + String(smoothedCalTempC, 2) +
     ",\"ph\":" + String(calculatedpH, 2) +
+    ",\"phVoltage\":" + String(smoothedPHVoltage, 3) +
     ",\"do\":" + String(calculatedDO, 2) +
+    ",\"doVoltage\":" + String(smoothedDOVoltage / 1000.0, 3) +
     ",\"ec\":" + String(calculatedEC, 2) +
+    ",\"ecVoltage\":" + String(smoothedECVoltage, 3) +
     ",\"tds\":" + String(calculatedTDS, 0) +
-    ",\"ntu\":" + String(calculatedNTU, 1) + "}";
+    ",\"tdsVoltage\":" + String(smoothedTDSVoltage, 3) +
+    ",\"turbidityVoltage\":" + String(smoothedTurbidityVoltage, 3) +
+    ",\"ntu\":" + String(calculatedNTU, 1) +
+    ",\"updatedAt\":{\".sv\":\"timestamp\"}}";
   String path = String("/devices/") + DEVICE_ID + "/live_data.json?auth=" + firebaseIdToken;
 
   sslClient.print("PUT ");
@@ -805,6 +811,11 @@ void loop() {
           String(calculatedpH, 2) + " | DO=" + String(calculatedDO, 2) +
           " mg/L | EC=" + String(calculatedEC, 2) + " mS/cm | TDS=" +
           String(calculatedTDS, 0) + " ppm | NTU=" + String(calculatedNTU, 1));
+        logSerial("[Probe volts] pH=" + String(smoothedPHVoltage, 3) +
+          "V | DO=" + String(smoothedDOVoltage / 1000.0, 3) +
+          "V | EC=" + String(smoothedECVoltage, 3) +
+          "V | TDS=" + String(smoothedTDSVoltage, 3) +
+          "V | Turbidity=" + String(smoothedTurbidityVoltage, 3) + "V");
         pushToFirebase();
         lastUploadTime = millis();
       }

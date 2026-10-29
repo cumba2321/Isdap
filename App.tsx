@@ -52,6 +52,7 @@ const DEVICE_CLAIMS_PATH = 'deviceClaims';
 const DEVICES_PATH = 'devices';
 const HISTORY_PAGE_SIZE = 100;
 const HISTORY_CHART_MAX_POINTS = 500;
+const DEVICE_STALE_AFTER_MS = 30_000;
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -113,6 +114,7 @@ function AppContent() {
   const [voltageUpdatedAt, setVoltageUpdatedAt] = useState<number | null>(null);
   const [isLive, setIsLive] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(new Date());
+  const lastDeviceUpdateAt = useRef<number | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>('dashboard');
   const [hasUnreadAlerts, setHasUnreadAlerts] = useState(false);
   const [showCalibrationScreen, setShowCalibrationScreen] = useState(false);
@@ -1223,14 +1225,19 @@ function AppContent() {
       await update(ref(database), changes);
       setDeviceSerialLogs([]);
       return { success: true };
-    } catch {
-      return { success: false, error: 'Could not clear serial monitor data from Firebase. Check your connection and database rules.' };
+    } catch (error) {
+      const details = error instanceof Error ? ` (${error.message})` : '';
+      return {
+        success: false,
+        error: `Could not clear serial monitor data from Firebase. Publish the updated database rules and check your connection.${details}`,
+      };
     }
   };
 
   // Pull live sensor data, unless Auto Refresh is turned off in Settings.
   useEffect(() => {
     if (!farmId || !selectedDeviceId) {
+      lastDeviceUpdateAt.current = null;
       setIsLive(false);
       setDeviceReading(demoReading);
       setSensorVoltages({});
@@ -1243,6 +1250,7 @@ function AppContent() {
     setSensorVoltages({});
     setVoltageUpdatedAt(null);
     setAlertDetectedAt({});
+    lastDeviceUpdateAt.current = null;
     const deviceDataPath = `${DEVICES_PATH}/${selectedDeviceId}/live_data`;
     const pondRef = ref(database, deviceDataPath);
     const unsubscribe = onValue(
@@ -1253,10 +1261,25 @@ function AppContent() {
         const data = snapshot.val() as
           | (Partial<Record<keyof PondReading, number | string>> &
             Partial<Record<`${CalibratableMetricKey}Voltage`, number | string>> &
-            { ntu?: number | string })
+            { ntu?: number | string; updatedAt?: number | string })
           | null;
         if (!data) {
+          lastDeviceUpdateAt.current = null;
           setIsLive(false);
+          setSensorVoltages({});
+          setVoltageUpdatedAt(null);
+          return;
+        }
+
+        const receivedAt = Date.now();
+        const deviceUpdatedAt = Number(data.updatedAt);
+        const lastUpdateAt = Number.isFinite(deviceUpdatedAt) && deviceUpdatedAt > 0
+          ? deviceUpdatedAt
+          : receivedAt;
+        if (receivedAt - lastUpdateAt > DEVICE_STALE_AFTER_MS) {
+          lastDeviceUpdateAt.current = null;
+          setIsLive(false);
+          setDeviceReading(demoReading);
           setSensorVoltages({});
           setVoltageUpdatedAt(null);
           return;
@@ -1283,16 +1306,31 @@ function AppContent() {
         setSensorVoltages(nextVoltages);
         setVoltageUpdatedAt(recordedAt);
         setIsLive(true);
-        setLastUpdated(new Date());
+        lastDeviceUpdateAt.current = lastUpdateAt;
+        setLastUpdated(new Date(lastUpdateAt));
       },
       () => {
+        lastDeviceUpdateAt.current = null;
         setIsLive(false);
         setSensorVoltages({});
         setVoltageUpdatedAt(null);
         Alert.alert('Sensor unavailable', 'Could not read this device. It may be offline or Firebase access may not be configured.');
       },
     );
-    return unsubscribe;
+    const staleCheck = setInterval(() => {
+      const lastUpdateAt = lastDeviceUpdateAt.current;
+      if (lastUpdateAt !== null && Date.now() - lastUpdateAt > DEVICE_STALE_AFTER_MS) {
+        lastDeviceUpdateAt.current = null;
+        setIsLive(false);
+        setDeviceReading(demoReading);
+        setSensorVoltages({});
+        setVoltageUpdatedAt(null);
+      }
+    }, 1000);
+    return () => {
+      unsubscribe();
+      clearInterval(staleCheck);
+    };
   }, [farmId, preferences.autoRefresh, selectedDeviceId]);
 
   useEffect(() => {

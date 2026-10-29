@@ -63,7 +63,7 @@
         },
         "serial_monitor": {
           ".read": "auth != null && root.child('deviceClaims').child($deviceId).child('ownerUid').val() === auth.uid",
-          ".write": "auth != null && root.child('deviceConfig').child($deviceId).child('authUid').val() === auth.uid",
+          ".write": "auth != null && (root.child('deviceConfig').child($deviceId).child('authUid').val() === auth.uid || (root.child('deviceClaims').child($deviceId).child('ownerUid').val() === auth.uid && !newData.exists()))",
           ".validate": "newData.hasChildren(['bootId', 'entries'])",
           "bootId": {
             ".validate": "newData.isString() && newData.val().length <= 80"

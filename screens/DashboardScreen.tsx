@@ -40,15 +40,29 @@ export default function DashboardScreen({
   const displayedReading = isLive
     ? reading
     : { temp: 0, ec: 0, do: 0, ph: 0, tds: 0, turbidity: 0 };
-  const statusLabel = hasAlert ? 'NEEDS REVIEW' : isLive ? 'STABLE' : 'PREVIEW';
-  const statusMessage = hasAlert
-    ? 'One or more readings are outside the target range. Review the highlighted parameters below.'
-    : isLive
-      ? 'Your latest readings are within their target ranges.'
-      : 'Sample readings are shown until your device connects.';
+  const statusLabel = autoRefreshPaused && !isLive
+    ? 'PAUSED'
+    : !isLive && deviceName
+      ? 'OFFLINE'
+      : hasAlert
+        ? 'NEEDS REVIEW'
+        : isLive
+          ? 'STABLE'
+          : 'PREVIEW';
+  const statusMessage = autoRefreshPaused && !isLive
+    ? 'Automatic refresh is paused. Resume it in Settings to get current readings.'
+    : !isLive && deviceName
+      ? 'No recent readings. Check that your device has power and an internet connection.'
+      : hasAlert
+        ? 'One or more readings are outside the target range. Review the highlighted parameters below.'
+        : isLive
+          ? 'Your latest readings are within their target ranges.'
+          : 'Sample readings are shown until your device connects.';
   const mascotVariant = !deviceName || !isLive ? 'sad' : hasAlert ? 'worried' : 'happy';
-  const mascotMessage = mascotVariant === 'sad'
-    ? "I can't see your pond readings yet. Check that your device is connected."
+  const mascotMessage = autoRefreshPaused && !isLive
+    ? 'Refresh is paused. Turn it back on in Settings to see current readings.'
+    : mascotVariant === 'sad'
+    ? 'I can’t see recent readings. Check that your device is powered and connected.'
     : mascotVariant === 'worried'
       ? 'A reading needs your attention. Please check the pond conditions.'
       : "I'm keeping an eye on your pond's readings. Check your dashboard for the latest update.";
@@ -63,28 +77,39 @@ export default function DashboardScreen({
         <View style={styles.dashboardGreetingCopy}>
           <Text style={styles.dashboardGreetingDate}>{dateLabel}</Text>
           <Text numberOfLines={2} style={styles.dashboardGreeting}>Good {timeOfDay}, {greetingName}!</Text>
-          {devices.length > 1 ? (
-            <Pressable
-              onPress={() => {
-                setDevicePickerError('');
-                setDevicePickerVisible(true);
-              }}
-              accessibilityRole="button"
-              accessibilityLabel={`Selected pond ${deviceName}. Tap to switch pond.`}
-              style={({ pressed }) => [styles.dashboardDeviceSelector, pressed && styles.pressed]}
-            >
-              <Text numberOfLines={1} style={styles.dashboardDeviceName}>{deviceName ?? 'Select a pond'}</Text>
-              <Text style={styles.dashboardDeviceChevron}>⌄</Text>
-            </Pressable>
-          ) : deviceName ? (
-            <Text numberOfLines={1} style={styles.dashboardGreetingPond}>Pond · {deviceName}</Text>
-          ) : null}
         </View>
         <View style={styles.stationBadge}>
           <View style={[styles.statusDot, isLive ? styles.liveDot : styles.demoDot]} />
-          <Text style={styles.stationText}>{isLive ? 'LIVE' : 'PREVIEW'}</Text>
+          <Text style={styles.stationText}>
+            {isLive ? 'LIVE' : autoRefreshPaused ? 'PAUSED' : deviceName ? 'OFFLINE' : 'PREVIEW'}
+          </Text>
         </View>
       </View>
+      {devices.length > 0 ? (
+        <Pressable
+          onPress={() => {
+            setDevicePickerError('');
+            setDevicePickerVisible(true);
+          }}
+          accessibilityRole="button"
+          accessibilityLabel={`Displaying ${deviceName ?? 'no pond selected'}. Tap to switch pond or device.`}
+          style={({ pressed }) => [styles.dashboardDeviceSelector, pressed && styles.pressed]}
+        >
+          <View style={styles.dashboardDeviceIcon}>
+            <Text style={styles.dashboardDeviceIconText}>P</Text>
+          </View>
+          <View style={styles.dashboardDeviceDetails}>
+            <Text style={styles.dashboardDeviceEyebrow}>DISPLAYING READINGS FROM</Text>
+            <Text numberOfLines={1} style={styles.dashboardDeviceName}>{deviceName ?? 'Select a device'}</Text>
+          </View>
+          <View style={styles.dashboardDeviceSwitch}>
+            <Text style={styles.dashboardDeviceSwitchText}>SWITCH</Text>
+            <Text style={styles.dashboardDeviceChevron}>›</Text>
+          </View>
+        </Pressable>
+      ) : deviceName ? (
+        <Text numberOfLines={1} style={styles.dashboardGreetingPond}>Pond · {deviceName}</Text>
+      ) : null}
 
       <View style={styles.dashboardMascotCard} accessibilityLabel="IsdaApp fish mascot">
         <View style={styles.dashboardMascotGlow} />
@@ -204,16 +229,26 @@ export default function DashboardScreen({
             </Text>
           </View>
         </View>
-        <Text style={styles.heroValue}>{hasAlert ? 'Review needed' : isLive ? 'Looking good' : 'Ready to monitor'}</Text>
+        <Text style={styles.heroValue}>
+          {autoRefreshPaused && !isLive
+            ? 'Refresh paused'
+            : !isLive && deviceName
+              ? 'Device offline'
+              : hasAlert
+                ? 'Review needed'
+                : isLive
+                  ? 'Looking good'
+                  : 'Ready to monitor'}
+        </Text>
         <Text style={styles.heroCopy}>{statusMessage}</Text>
         <View style={styles.updatedRow}>
           <View style={[styles.pulse, !isLive && styles.previewPulse]} />
           <Text style={styles.updatedText}>
-            {!isLive
-              ? 'Waiting for device data'
-              : autoRefreshPaused
-                ? 'Refresh paused · last updated ' +
-                  lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            {autoRefreshPaused && !isLive
+              ? 'Refresh paused · last updated ' +
+                lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              : !isLive
+                ? deviceName ? 'Device is offline · no recent readings' : 'Waiting for device data'
                 : 'Last updated ' + lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
           </Text>
         </View>
@@ -273,7 +308,13 @@ export default function DashboardScreen({
         <View>
           <Text style={styles.sectionTitle}>Water quality</Text>
           <Text style={styles.dashboardSectionCopy}>
-            {isLive ? 'Current device readings' : 'Preview · device readings are zero'}
+            {isLive
+              ? 'Current device readings'
+              : autoRefreshPaused
+                ? 'Refresh paused · showing no current readings'
+                : deviceName
+                  ? 'Device offline · no current readings'
+                  : 'Preview · device readings are zero'}
           </Text>
         </View>
       </View>
@@ -282,6 +323,7 @@ export default function DashboardScreen({
         {metrics.map((metric) => {
           const value = displayedReading[metric.key];
           const isHealthy = !isLive || metric.getSeverity(value) === null;
+          const hideReading = !isLive && Boolean(deviceName);
           return (
             <View key={metric.key} style={styles.metricCard}>
               <View style={styles.metricTop}>
@@ -291,12 +333,14 @@ export default function DashboardScreen({
                 <View style={[styles.metricStatusPill, isHealthy ? styles.metricStatusPillGood : styles.metricStatusPillAlert]}>
                   <View style={[styles.healthDot, { backgroundColor: isHealthy ? '#078A95' : '#C84F5B' }]} />
                   <Text style={[styles.metricStatusText, isHealthy ? styles.metricStatusTextGood : styles.metricStatusTextAlert]}>
-                    {!isLive ? 'PREVIEW' : isHealthy ? 'IN RANGE' : 'REVIEW'}
+                    {!isLive
+                      ? autoRefreshPaused ? 'PAUSED' : deviceName ? 'OFFLINE' : 'PREVIEW'
+                      : isHealthy ? 'IN RANGE' : 'REVIEW'}
                   </Text>
                 </View>
               </View>
               <Text style={styles.metricLabel}>{metric.label}</Text>
-              <Text style={styles.metricValue}>{formatValue(value, metric.key)}</Text>
+              <Text style={styles.metricValue}>{hideReading ? '—' : formatValue(value, metric.key)}</Text>
               <Text style={styles.metricUnit}>{metric.unit}</Text>
             </View>
           );
