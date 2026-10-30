@@ -78,7 +78,7 @@ DallasTemperature tempSensor(&oneWire);
 float smoothedCalTempC = 25.0, tempCalibrationOffset = -0.56;
 float phSlope = 55.0, phIntercept = -99.13, smoothedPHVoltage = 0.0;
 float smoothedDOVoltage = 0.0, calibratedV_saturation = 969.0;
-float ecV1 = 0.275, ecC1 = 0.0, ecV2 = 2.30, ecC2 = 13.61, smoothedECVoltage = 0.0;
+float ecV1 = 0.275, ecC1 = 1.494, ecV2 = 2.30, ecC2 = 13.61, smoothedECVoltage = 0.0;
 float tdsCalibrationFactor = 1.045, smoothedTDSVoltage = 0.0;
 float smoothedTurbidityVoltage = 0.0;
 
@@ -88,6 +88,11 @@ bool isECFirstRead = true, isTDSFirstRead = true, isTurbidityFirstRead = true;
 float calculatedpH = 7.0, calculatedDO = 6.0, calculatedEC = 0.0, calculatedTDS = 0.0, calculatedNTU = 0.0;
 
 const uint8_t smsAlertCount = 6;
+enum SmsDeliveryResult {
+  SMS_DELIVERY_ACCEPTED,
+  SMS_DELIVERY_REJECTED,
+  SMS_DELIVERY_UNKNOWN
+};
 bool smsSensorCritical[smsAlertCount] = { false };
 bool smsSentForIncident[smsAlertCount] = { false };
 bool smsSummaryPending = false;
@@ -97,6 +102,7 @@ const unsigned long smsRetryInterval = 15000;
 String alertPhoneNumber = "";
 bool smsNotificationsEnabled = false;
 bool smsCriticalEnabled = false;
+const unsigned long smsModemBaud = 115200;
 
 const uint16_t DO_Table[41] = {
     14460, 14220, 13820, 13440, 13090, 12740, 12420, 12110, 11810, 11530,
@@ -517,7 +523,8 @@ void fetchPhoneNumberFromFirebase() {
 // ---------------------------------------------------------------
 void setup() {
   Serial.begin(115200);
-  Serial1.begin(115200);
+  Serial1.begin(smsModemBaud);
+  delay(5000);
   tempSensor.begin();
   analogReadResolution(10);
   RTC.begin();
@@ -660,25 +667,37 @@ void readSensors() {
 // ---------------------------------------------------------------
 // SMS alerts
 // ---------------------------------------------------------------
-bool waitForModemResponse(const String& expected, unsigned long timeoutMs) {
-  String response;
+String formatSmsModemResponse(const String& response) {
+  String formatted = "";
+  for (unsigned int i = 0; i < response.length(); i++) {
+    char character = response[i];
+    if (character == '\r' || character == '\n') {
+      if (formatted.length() > 0 && formatted[formatted.length() - 1] != ' ') formatted += ' ';
+    } else if (character >= 32 && character <= 126) {
+      formatted += character;
+    }
+  }
+  formatted.trim();
+  return formatted.length() > 0 ? formatted : "<no response>";
+}
+
+String readSmsModemResponse(unsigned long waitMs) {
+  String response = "";
   unsigned long startedAt = millis();
-  while (millis() - startedAt < timeoutMs) {
+  while (millis() - startedAt < waitMs) {
     while (Serial1.available()) {
       char character = (char)Serial1.read();
-      if (expected == ">" && character == '>') return true;
       response += character;
-      if (response.indexOf("ERROR") >= 0) return false;
-      if (response.indexOf(expected) >= 0) return true;
-      if (response.length() > 160) response.remove(0, 80);
+      Serial.write(character);
+      if (response.length() > 240) response.remove(0, 120);
     }
     delay(1);
   }
-  return false;
+  return response;
 }
 
-bool waitForSmsConfirmation(unsigned long timeoutMs) {
-  String response;
+SmsDeliveryResult waitForSmsConfirmation(unsigned long timeoutMs, String& response) {
+  response = "";
   bool hasMessageReference = false;
   bool hasOk = false;
   unsigned long startedAt = millis();
@@ -686,43 +705,38 @@ bool waitForSmsConfirmation(unsigned long timeoutMs) {
     while (Serial1.available()) {
       response += (char)Serial1.read();
       hasMessageReference = hasMessageReference || response.indexOf("+CMGS:") >= 0;
-      hasOk = hasOk || response.indexOf("\nOK") >= 0 || response.startsWith("OK");
-      if (response.indexOf("ERROR") >= 0) return false;
-      if (hasMessageReference && hasOk) return true;
+      hasOk = hasOk || response.indexOf("OK") >= 0;
+      if (response.indexOf("ERROR") >= 0) return SMS_DELIVERY_REJECTED;
+      if (hasMessageReference && hasOk) return SMS_DELIVERY_ACCEPTED;
       if (response.length() > 160) response.remove(0, 80);
     }
     delay(1);
   }
-  return false;
+  return SMS_DELIVERY_UNKNOWN;
 }
 
-bool sendCriticalSMS(const String& message) {
+SmsDeliveryResult sendCriticalSMS(const String& message) {
   if (!smsNotificationsEnabled || !smsCriticalEnabled || alertPhoneNumber.length() == 0) {
-    return false;
+    return SMS_DELIVERY_REJECTED;
   }
 
   while (Serial1.available()) Serial1.read();
   Serial1.println("AT+CMGF=1");
-  if (!waitForModemResponse("OK", 2000)) {
-    logSerial("[SMS] Modem did not confirm text mode.");
-    return false;
-  }
+  String modemResponse = readSmsModemResponse(1000);
+  logSerial("[SMS] Text-mode command response: " + formatSmsModemResponse(modemResponse));
 
   Serial1.print("AT+CMGS=\"");
   Serial1.print(alertPhoneNumber);
-  Serial1.println("\"");
-  if (!waitForModemResponse(">", 5000)) {
-    logSerial("[SMS] Modem did not provide the message prompt.");
-    return false;
-  }
+  Serial1.print("\"\r\n");
+  modemResponse = readSmsModemResponse(1000);
+  logSerial("[SMS] Recipient command response: " + formatSmsModemResponse(modemResponse));
 
   Serial1.print(message);
+  delay(500);
   Serial1.write(26);
-  if (!waitForSmsConfirmation(30000)) {
-    logSerial("[SMS] Modem did not confirm sending the critical alert.");
-    return false;
-  }
-  return true;
+  SmsDeliveryResult result = waitForSmsConfirmation(30000, modemResponse);
+  logSerial("[SMS] Final send response: " + formatSmsModemResponse(modemResponse));
+  return result;
 }
 
 void updateSmsAlertState(uint8_t sensorIndex, bool critical) {
@@ -789,12 +803,17 @@ void sendPendingSmsSummary() {
 
   lastSmsAttemptAt = millis();
   logSerial("[SMS] Sending summary of critical sensor readings.");
-  if (sendCriticalSMS(message)) {
+  SmsDeliveryResult result = sendCriticalSMS(message);
+  if (result == SMS_DELIVERY_ACCEPTED || result == SMS_DELIVERY_UNKNOWN) {
     for (uint8_t sensorIndex = 0; sensorIndex < smsAlertCount; sensorIndex++) {
       if (smsSensorCritical[sensorIndex]) smsSentForIncident[sensorIndex] = true;
     }
     smsSummaryPending = false;
-    logSerial("[SMS] Critical sensor summary accepted by modem.");
+    if (result == SMS_DELIVERY_ACCEPTED) {
+      logSerial("[SMS] Critical sensor summary accepted by modem.");
+    } else {
+      logSerial("[SMS] Send result unknown; suppressing duplicate SMS for this critical incident.");
+    }
   }
 }
 
