@@ -28,6 +28,13 @@ bool internetAvailable = true;
 String ssid = "";
 String pass = "";
 bool portalActive = false;
+bool wifiConnecting = false;
+bool pendingWiFiCredentials = false;
+unsigned long wifiConnectionAttemptAt = 0;
+unsigned long internetFailureStartedAt = 0;
+const unsigned long wifiConnectionTimeout = 20000;
+const unsigned long setupPortalOfflineDelay = 30000;
+const char* setupPortalSSID = "IsdaApp_Setup";
 
 WiFiServer server(80);
 WiFiSSLClient sslClient;
@@ -37,8 +44,6 @@ unsigned long lastSerialLogUpload = 0;
 const unsigned long serialLogUploadInterval = 10000;
 unsigned long lastDeviceConfigFetch = 0;
 const unsigned long deviceConfigFetchInterval = 60000;
-unsigned long lastWiFiReconnectAttempt = 0;
-const unsigned long wifiReconnectInterval = 15000;
 const uint8_t maxSerialLogEntries = 10;
 struct SerialLogEntry {
   uint32_t sequence;
@@ -56,6 +61,15 @@ const int ssidAddress = 0;
 const int passAddress = 64;
 const int ssidMaxLen = 32;
 const int passMaxLen = 63;
+const int smsPhoneAddress = 128;
+const int smsPhoneMaxLen = 16;
+const int smsEnabledAddress = 145;
+const int smsCriticalAddress = 146;
+
+void startSetupPortal();
+void startStationConnection();
+void cacheSmsSettings();
+String normalizeSmsPhoneNumber(String phoneNumber);
 
 // --- Sensor Objects & Variables ---
 OneWire oneWire(TEMP_PIN);
@@ -73,12 +87,12 @@ bool isECFirstRead = true, isTDSFirstRead = true, isTurbidityFirstRead = true;
 
 float calculatedpH = 7.0, calculatedDO = 6.0, calculatedEC = 0.0, calculatedTDS = 0.0, calculatedNTU = 0.0;
 
-bool smsSentForTempCritical = false;
-bool smsSentForPHCritical = false;
-bool smsSentForDOCritical = false;
-bool smsSentForECCritical = false;
-bool smsSentForTDSCritical = false;
-bool smsSentForTurbidityCritical = false;
+const uint8_t smsAlertCount = 6;
+bool smsSensorCritical[smsAlertCount] = { false };
+bool smsSentForIncident[smsAlertCount] = { false };
+bool smsSummaryPending = false;
+unsigned long lastSmsAttemptAt = 0;
+const unsigned long smsRetryInterval = 15000;
 
 String alertPhoneNumber = "";
 bool smsNotificationsEnabled = false;
@@ -133,31 +147,51 @@ String urlDecode(const String& in) {
 }
 
 // ---------------------------------------------------------------
-// Wi-Fi connection helper with retries
+// Wi-Fi mode transitions
 // ---------------------------------------------------------------
-bool connectWiFi(const String& s, const String& p) {
-  for (int attempt = 1; attempt <= 3; attempt++) {
-    logSerial("[WiFi] Attempt " + String(attempt) + " to '" + s + "' (pass len " + String(p.length()) + ")");
-    WiFi.disconnect();
-    WiFi.begin(s.c_str(), p.c_str());
-
-    unsigned long t = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - t < 15000) {
-      delay(250);
-    }
-
-    if (WiFi.status() == WL_CONNECTED) {
-      // Wait for DHCP to hand out an IP
-      t = millis();
-      while (WiFi.localIP() == IPAddress(0, 0, 0, 0) && millis() - t < 5000) {
-        delay(100);
-      }
-      logSerial("[WiFi] Connected, IP: " + WiFi.localIP().toString());
-      return true;
-    }
-    logSerial("[WiFi] Failed, status = " + String(WiFi.status()));
+void startSetupPortal() {
+  if (portalActive) return;
+  server.end();
+  WiFi.end();
+  delay(100);
+  uint8_t status = WiFi.beginAP(setupPortalSSID);
+  if (status != WL_AP_LISTENING) {
+    logSerial("[WiFi] Could not start setup hotspot.");
+    return;
   }
-  return false;
+  server.begin();
+  portalActive = true;
+  wifiConnecting = false;
+  internetAvailable = false;
+  internetFailureStartedAt = 0;
+  logSerial("[MODE: SETUP] Hotspot IsdaApp_Setup is active. Sensors and SMS remain enabled.");
+}
+
+void startStationConnection() {
+  if (ssid.length() == 0) {
+    logSerial("[WiFi] No saved network name; keeping setup hotspot active.");
+    startSetupPortal();
+    return;
+  }
+
+  server.end();
+  WiFi.end();
+  delay(100);
+  portalActive = false;
+  internetAvailable = false;
+  internetFailureStartedAt = 0;
+  wifiConnecting = true;
+  wifiConnectionAttemptAt = millis();
+  WiFi.setTimeout(2000);
+  logSerial("[WiFi] Trying saved network '" + ssid + "'.");
+  WiFi.begin(ssid.c_str(), pass.c_str());
+}
+
+void cacheSmsSettings() {
+  alertPhoneNumber = normalizeSmsPhoneNumber(readEEPROM(smsPhoneAddress, smsPhoneMaxLen));
+  smsNotificationsEnabled = EEPROM.read(smsEnabledAddress) == 1;
+  smsCriticalEnabled = EEPROM.read(smsCriticalAddress) == 1;
+  logSerial("[SMS] Restored saved alert settings.");
 }
 
 // ---------------------------------------------------------------
@@ -282,6 +316,7 @@ bool readHttpResponse(WiFiSSLClient& client, String& statusLine, String& body) {
     return false;
   }
   internetAvailable = true;
+  internetFailureStartedAt = 0;
   bool chunked = false;
 
   while (client.connected() || client.available()) {
@@ -467,6 +502,9 @@ void fetchPhoneNumberFromFirebase() {
     alertPhoneNumber = normalizeSmsPhoneNumber(readJsonString(responseBody, "alertNumber"));
     smsNotificationsEnabled = readJsonBool(responseBody, "smsEnabled");
     smsCriticalEnabled = readJsonBool(responseBody, "smsCritical");
+    writeEEPROM(smsPhoneAddress, alertPhoneNumber, smsPhoneMaxLen);
+    EEPROM.write(smsEnabledAddress, smsNotificationsEnabled ? 1 : 0);
+    EEPROM.write(smsCriticalAddress, smsCriticalEnabled ? 1 : 0);
     applySerialLogClearMarkers(readJsonString(responseBody, "serialLogClear"));
     logSerial("[Firebase] SMS settings refreshed.");
   } else {
@@ -491,21 +529,11 @@ void setup() {
 
   ssid = readEEPROM(ssidAddress, ssidMaxLen);
   pass = readEEPROM(passAddress, passMaxLen);
+  cacheSmsSettings();
+  internetAvailable = false;
 
-  if (ssid.length() > 0) {
-    connectWiFi(ssid, pass);
-  }
-
-  if (WiFi.status() != WL_CONNECTED) {
-    WiFi.beginAP("IsdaApp_Setup");
-    server.begin();
-    portalActive = true;
-    logSerial("[MODE: SETUP] Access Point started: IsdaApp_Setup");
-  } else {
-    portalActive = false;
-    logSerial("[MODE: CLOUD] Connected to Wi-Fi successfully.");
-    if (signInDevice()) fetchPhoneNumberFromFirebase();
-  }
+  if (ssid.length() > 0) startStationConnection();
+  else startSetupPortal();
 }
 
 // ---------------------------------------------------------------
@@ -515,6 +543,7 @@ void handlePortal() {
   WiFiClient client = server.available();
   if (client) {
     String requestString = "";
+    unsigned long requestStartedAt = millis();
     while (client.connected()) {
       if (client.available()) {
         char c = client.read();
@@ -527,16 +556,19 @@ void handlePortal() {
             int pEnd = requestString.indexOf(" HTTP/");
 
             bool saved = false;
-            if (sStart > 2 && sEnd > sStart && pEnd > pStart) {
+            if (sStart > 2 && sEnd > sStart && pEnd >= pStart) {
               String newSSID = urlDecode(requestString.substring(sStart, sEnd));
               String newPass = urlDecode(requestString.substring(pStart, pEnd));
-
-              writeEEPROM(ssidAddress, newSSID, ssidMaxLen);
-              writeEEPROM(passAddress, newPass, passMaxLen);
-              saved = true;
-
-              logSerial("Credentials saved via Portal! New SSID: " + newSSID +
-                             " (pass len " + String(newPass.length()) + ")");
+              if (newSSID.length() <= ssidMaxLen && newSSID.length() > 0 &&
+                  newPass.length() <= passMaxLen) {
+                ssid = newSSID;
+                pass = newPass;
+                writeEEPROM(ssidAddress, ssid, ssidMaxLen);
+                writeEEPROM(passAddress, pass, passMaxLen);
+                pendingWiFiCredentials = true;
+                saved = true;
+                logSerial("[Portal] New Wi-Fi credentials saved; trying the network.");
+              }
             } else {
               logSerial("[Portal] Could not parse credentials (request too long or malformed).");
             }
@@ -547,20 +579,16 @@ void handlePortal() {
             client.println();
             client.println("<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'></head><body style='font-family:sans-serif; padding:20px;'>");
             if (saved) {
-              client.println("<h2>Configuration Saved!</h2>");
-              client.println("<p>The device is restarting to connect to your network.</p>");
+              client.println("<h2>Wi-Fi credentials saved</h2>");
+              client.println("<p>The device is trying to connect. If internet is unavailable, the setup hotspot will return. Sensor monitoring and configured SMS alerts continue.</p>");
             } else {
               client.println("<h2>Save Failed</h2>");
-              client.println("<p>Credentials were too long or invalid. Go back and try again.</p>");
+              client.println("<p>Check that the network name is not empty and credentials fit the supported lengths, then go back and try again.</p>");
             }
             client.println("</body></html>");
             client.flush();
             client.stop();
 
-            if (saved) {
-              delay(2000);
-              NVIC_SystemReset();
-            }
             return;
           }
           else if (requestString.indexOf("GET / ") != -1 || requestString.indexOf("GET /favicon.ico") == -1) {
@@ -581,6 +609,8 @@ void handlePortal() {
           }
         }
       }
+      if (millis() - requestStartedAt > 3000) break;
+      delay(1);
     }
     client.stop();
   }
@@ -630,71 +660,170 @@ void readSensors() {
 // ---------------------------------------------------------------
 // SMS alerts
 // ---------------------------------------------------------------
+bool waitForModemResponse(const String& expected, unsigned long timeoutMs) {
+  String response;
+  unsigned long startedAt = millis();
+  while (millis() - startedAt < timeoutMs) {
+    while (Serial1.available()) {
+      char character = (char)Serial1.read();
+      if (expected == ">" && character == '>') return true;
+      response += character;
+      if (response.indexOf("ERROR") >= 0) return false;
+      if (response.indexOf(expected) >= 0) return true;
+      if (response.length() > 160) response.remove(0, 80);
+    }
+    delay(1);
+  }
+  return false;
+}
+
+bool waitForSmsConfirmation(unsigned long timeoutMs) {
+  String response;
+  bool hasMessageReference = false;
+  bool hasOk = false;
+  unsigned long startedAt = millis();
+  while (millis() - startedAt < timeoutMs) {
+    while (Serial1.available()) {
+      response += (char)Serial1.read();
+      hasMessageReference = hasMessageReference || response.indexOf("+CMGS:") >= 0;
+      hasOk = hasOk || response.indexOf("\nOK") >= 0 || response.startsWith("OK");
+      if (response.indexOf("ERROR") >= 0) return false;
+      if (hasMessageReference && hasOk) return true;
+      if (response.length() > 160) response.remove(0, 80);
+    }
+    delay(1);
+  }
+  return false;
+}
+
 bool sendCriticalSMS(const String& message) {
-  if (!smsNotificationsEnabled || !smsCriticalEnabled || alertPhoneNumber.length() == 0) return false;
+  if (!smsNotificationsEnabled || !smsCriticalEnabled || alertPhoneNumber.length() == 0) {
+    return false;
+  }
+
+  while (Serial1.available()) Serial1.read();
   Serial1.println("AT+CMGF=1");
-  delay(100);
+  if (!waitForModemResponse("OK", 2000)) {
+    logSerial("[SMS] Modem did not confirm text mode.");
+    return false;
+  }
+
   Serial1.print("AT+CMGS=\"");
   Serial1.print(alertPhoneNumber);
   Serial1.println("\"");
-  delay(100);
+  if (!waitForModemResponse(">", 5000)) {
+    logSerial("[SMS] Modem did not provide the message prompt.");
+    return false;
+  }
+
   Serial1.print(message);
-  delay(100);
   Serial1.write(26);
-  delay(2000);
+  if (!waitForSmsConfirmation(30000)) {
+    logSerial("[SMS] Modem did not confirm sending the critical alert.");
+    return false;
+  }
   return true;
 }
 
-void updateSmsAlertState(
-  bool critical,
-  bool& smsSentForIncident,
-  const String& criticalMessage
-) {
-  if (critical) {
-    if (!internetAvailable && !smsSentForIncident) {
-      smsSentForIncident = sendCriticalSMS(criticalMessage);
+void updateSmsAlertState(uint8_t sensorIndex, bool critical) {
+  if (!critical) {
+    smsSensorCritical[sensorIndex] = false;
+    smsSentForIncident[sensorIndex] = false;
+    return;
+  }
+  if (!smsSensorCritical[sensorIndex] && !smsSentForIncident[sensorIndex]) {
+    smsSummaryPending = true;
+  }
+  smsSensorCritical[sensorIndex] = true;
+}
+
+String buildCriticalSmsSummary() {
+  String message = "CRITICAL POND ALERT (offline)";
+  bool hasCriticalSensor = false;
+
+  if (smsSensorCritical[0]) {
+    message += "\nTemp: " + String(smoothedCalTempC, 1) + " C - ";
+    message += smoothedCalTempC < 10.0 ? "below" : "above";
+    message += " safe range";
+    hasCriticalSensor = true;
+  }
+  if (smsSensorCritical[1]) {
+    message += "\npH: " + String(calculatedpH, 1) + " - ";
+    message += calculatedpH < 4.0 ? "below" : "above";
+    message += " safe range";
+    hasCriticalSensor = true;
+  }
+  if (smsSensorCritical[2]) {
+    message += "\nDO: " + String(calculatedDO, 1) + " mg/L - below safe range";
+    hasCriticalSensor = true;
+  }
+  if (smsSensorCritical[3]) {
+    message += "\nEC: " + String(calculatedEC, 2) + " mS/cm - above safe range";
+    hasCriticalSensor = true;
+  }
+  if (smsSensorCritical[4]) {
+    message += "\nTDS: " + String(calculatedTDS, 0) + " ppm - above safe range";
+    hasCriticalSensor = true;
+  }
+  if (smsSensorCritical[5]) {
+    message += "\nTurbidity: " + String(calculatedNTU, 1) + " NTU - ";
+    message += calculatedNTU < 10.0 ? "below" : "above";
+    message += " safe range";
+    hasCriticalSensor = true;
+  }
+
+  if (hasCriticalSensor) message += "\nPlease check pond conditions and sensor readings.";
+  return hasCriticalSensor ? message : "";
+}
+
+void sendPendingSmsSummary() {
+  if (internetAvailable || !smsNotificationsEnabled || !smsCriticalEnabled ||
+      alertPhoneNumber.length() == 0 || !smsSummaryPending) return;
+  if (lastSmsAttemptAt != 0 && millis() - lastSmsAttemptAt < smsRetryInterval) return;
+
+  String message = buildCriticalSmsSummary();
+  if (message.length() == 0) {
+    smsSummaryPending = false;
+    return;
+  }
+
+  lastSmsAttemptAt = millis();
+  logSerial("[SMS] Sending summary of critical sensor readings.");
+  if (sendCriticalSMS(message)) {
+    for (uint8_t sensorIndex = 0; sensorIndex < smsAlertCount; sensorIndex++) {
+      if (smsSensorCritical[sensorIndex]) smsSentForIncident[sensorIndex] = true;
     }
-  } else {
-    smsSentForIncident = false;
+    smsSummaryPending = false;
+    logSerial("[SMS] Critical sensor summary accepted by modem.");
   }
 }
 
 void evaluateThresholds() {
   bool tempCritical = smoothedCalTempC < 10.0 || smoothedCalTempC > 35.0;
-  updateSmsAlertState(
-    tempCritical, smsSentForTempCritical,
-    "CRITICAL: Temp " + String(smoothedCalTempC, 1) + "C"
-  );
+  updateSmsAlertState(0, tempCritical);
 
   bool phCritical = calculatedpH < 4.0 || calculatedpH > 9.0;
-  updateSmsAlertState(
-    phCritical, smsSentForPHCritical,
-    "CRITICAL: pH " + String(calculatedpH, 1)
-  );
+  updateSmsAlertState(1, phCritical);
 
   bool doCritical = calculatedDO < 3.0;
-  updateSmsAlertState(
-    doCritical, smsSentForDOCritical,
-    "CRITICAL: DO " + String(calculatedDO, 1) + " mg/L"
-  );
+  updateSmsAlertState(2, doCritical);
 
   bool ecCritical = calculatedEC > 5.0;
-  updateSmsAlertState(
-    ecCritical, smsSentForECCritical,
-    "CRITICAL: EC " + String(calculatedEC, 2)
-  );
+  updateSmsAlertState(3, ecCritical);
 
   bool tdsCritical = calculatedTDS > 350.0;
-  updateSmsAlertState(
-    tdsCritical, smsSentForTDSCritical,
-    "CRITICAL: TDS " + String(calculatedTDS, 0)
-  );
+  updateSmsAlertState(4, tdsCritical);
 
   bool turbidityCritical = calculatedNTU < 10.0 || calculatedNTU > 150.0;
-  updateSmsAlertState(
-    turbidityCritical, smsSentForTurbidityCritical,
-    "CRITICAL: Turbidity " + String(calculatedNTU, 1)
-  );
+  updateSmsAlertState(5, turbidityCritical);
+
+  smsSummaryPending = false;
+  for (uint8_t sensorIndex = 0; sensorIndex < smsAlertCount; sensorIndex++) {
+    if (smsSensorCritical[sensorIndex] && !smsSentForIncident[sensorIndex]) {
+      smsSummaryPending = true;
+      break;
+    }
+  }
 }
 
 // ---------------------------------------------------------------
@@ -785,21 +914,35 @@ void pushSerialMonitorToFirebase() {
 // Main loop
 // ---------------------------------------------------------------
 void loop() {
+  readSensors();
+  evaluateThresholds();
+
+  if (pendingWiFiCredentials) {
+    pendingWiFiCredentials = false;
+    startStationConnection();
+  }
+
   if (portalActive) {
     handlePortal();
+  } else if (wifiConnecting) {
+    if (WiFi.status() == WL_CONNECTED) {
+      wifiConnecting = false;
+      internetAvailable = false;
+      internetFailureStartedAt = millis();
+      lastUploadTime = millis();
+      logSerial("[WiFi] Connected to saved network; checking internet and Firebase.");
+      if (signInDevice()) fetchPhoneNumberFromFirebase();
+    } else if (millis() - wifiConnectionAttemptAt >= wifiConnectionTimeout) {
+      logSerial("[WiFi] Could not connect. Returning to setup hotspot.");
+      startSetupPortal();
+    }
   } else {
-    readSensors();
-    evaluateThresholds();
-
-    // Keep sampling and allow SIM SMS alerts while the internet link is down.
     if (WiFi.status() != WL_CONNECTED) {
       internetAvailable = false;
-      if (lastWiFiReconnectAttempt == 0 ||
-          millis() - lastWiFiReconnectAttempt >= wifiReconnectInterval) {
-        logSerial("[WiFi] Connection lost, retrying in background.");
-        WiFi.begin(ssid.c_str(), pass.c_str());
-        lastWiFiReconnectAttempt = millis();
-      }
+    }
+
+    if (!internetAvailable && internetFailureStartedAt == 0) {
+      internetFailureStartedAt = millis();
     }
 
     if (WiFi.status() == WL_CONNECTED) {
@@ -824,6 +967,14 @@ void loop() {
         lastSerialLogUpload = millis();
       }
     }
-    delay(1000);
+
+    if (!internetAvailable && internetFailureStartedAt != 0 &&
+        millis() - internetFailureStartedAt >= setupPortalOfflineDelay) {
+      logSerial("[WiFi] Internet unavailable. Switching to setup hotspot.");
+      startSetupPortal();
+    }
   }
+
+  sendPendingSmsSummary();
+  delay(1000);
 }
